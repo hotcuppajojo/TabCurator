@@ -1,0 +1,63 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build directories for different browsers
+build/
+dist/
+
+# Ignore generated files for each browser package
+chrome-extension.zip
+firefox-extension.zip
+safari-extension.xcodeproj
+safari-extension.zip
+
+# Mac system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon files
+Icon?
+._*
+
+# Thumbnails
+Thumbs.db
+
+# VS Code workspace settings
+.vscode/
+.vscode/*
+
+# Log files
+*.log
+*.log.*
+
+# Coverage reports
+coverage/
+*.lcov
+
+# Generated files and backups
+*.bak
+*.tmp
+*.swp
+*.swo
+
+# Compiled output (if applicable)
+*.out
+*.exe
+*.dll
+*.so
+
+# Other IDEs or editor settings (if relevant)
+.idea/
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Ignore browser-specific builds and cache files
+firefox-cache/
+chrome-cache/
+safari-cache/
