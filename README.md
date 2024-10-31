@@ -41,7 +41,8 @@ TabCurator/
 
 ## License
 
-**Proprietary
+### Proprietary
+
 All rights reserved. Unauthorized use, modification, or distribution of this software is strictly prohibited. For licensing inquiries, please contact <jojo@petersky.dev>
 
 Please see the LICENSE file for full details.

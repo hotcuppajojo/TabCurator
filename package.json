@@ -11,5 +11,9 @@
   "devDependencies": {
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0"
+  },
+  "dependencies": {
+    "fs-extra": "^11.2.0",
+    "terser": "^5.36.0"
   }
 }

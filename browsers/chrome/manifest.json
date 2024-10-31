@@ -9,10 +9,10 @@
       "alarms"
     ],
     "background": {
-      "service_worker": "background/background.js"
+      "service_worker": "src/background/background.js"
     },
     "action": {
-      "default_popup": "popup/popup.html",
+      "default_popup": "src/popup/popup.html",
       "default_icon": "icons/icon128.png"
     },
     "icons": {
@@ -23,10 +23,10 @@
     "content_scripts": [
       {
         "matches": ["<all_urls>"],
-        "js": ["content/content.js"]
+        "js": ["src/content/content.js"]
       }
     ],
-    "options_page": "options/options.html",
+    "options_page": "src/options/options.html",
     "host_permissions": [
       "<all_urls>"
     ]
