@@ -1,6 +1,6 @@
 # TabCurator
 
-**An Advanced Cross-Browser Tab Management Extension
+**An Advanced Cross-Browser Tab Management Extension**
 
 ## Project Overview
 
@@ -23,22 +23,25 @@ TabCurator is a browser extension designed to streamline tab management for user
 
 ```plaintext
 TabCurator/
-├── src/                    # Core source code› (cross-browser compatible)
+├── src/                    # Core source code (cross-browser compatible)
 │   ├── popup/              # Popup UI components
 │   ├── background/         # Background scripts
 │   ├── content/            # Content scripts
 │   └── options/            # Options/settings page
 ├── browsers/               # Browser-specific configuration files
-│   ├── chrome/
-│   ├── firefox/
-│   └── safari/
+│   └── chrome/             # Chrome-specific configuration
+├── build/                  # Build output directory
+├── build-scripts/          # Scripts for building extensions per browser
+├── tests/                  # Jest test files for each component
 ├── .github/workflows/      # CI/CD workflow files for automated builds and deployments
-└── README.md               # Project documentation
-```plaintext
+├── LICENSE                 # License file
+├── README.md               # Project documentation
+└── package.json            # Node.js dependencies and scripts
+```
 
-##License
+## License
 
 **Proprietary
-All rights reserved. Unauthorized use, modification, or distribution of this software is strictly prohibited. For licensing inquiries, please contact jojo@petersky.dev
+All rights reserved. Unauthorized use, modification, or distribution of this software is strictly prohibited. For licensing inquiries, please contact <jojo@petersky.dev>
 
 Please see the LICENSE file for full details.
