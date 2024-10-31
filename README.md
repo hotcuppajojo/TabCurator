@@ -23,7 +23,7 @@ TabCurator is a browser extension designed to streamline tab management for user
 
 ```plaintext
 TabCurator/
-├── src/                    # Core source code (cross-browser compatible)
+├── src/                    # Core source code› (cross-browser compatible)
 │   ├── popup/              # Popup UI components
 │   ├── background/         # Background scripts
 │   ├── content/            # Content scripts
@@ -34,6 +34,7 @@ TabCurator/
 │   └── safari/
 ├── .github/workflows/      # CI/CD workflow files for automated builds and deployments
 └── README.md               # Project documentation
+```plaintext
 
 ##License
 
