@@ -1,0 +1,15 @@
+{
+  "scripts": {
+    "build-chrome": "node build-scripts/build-chrome.js",
+    "build-firefox": "node build-scripts/build-firefox.js",
+    "build-safari": "node build-scripts/build-safari.js",
+    "package-chrome-release": "zip -r build/chrome-extension.zip dist/",
+    "package-firefox-release": "zip -r build/firefox-extension.zip dist/",
+    "package-safari-release": "zip -r build/safari-extension.zip dist/",
+    "test": "jest --config jest.config.js"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0"
+  }
+}
