@@ -1,4 +1,4 @@
-// popup/popup.js
+// src/popup/popup.js
 
 document.addEventListener("DOMContentLoaded", () => {
     const suspendButton = document.getElementById("suspend-inactive-tabs");
@@ -9,6 +9,8 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       });
     }
+  
+    loadTabs(); // Load tabs when the popup is opened
   });
   
   // Load list of tabs in the popup
@@ -26,5 +28,4 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   
-  // Load tabs when popup is opened
   module.exports = { loadTabs };
