@@ -1,6 +1,6 @@
 # TabCurator
 
-**An Advanced Cross-Browser Tab Management Extension**
+## An Advanced Cross-Browser Tab Management Extension
 
 ## Project Overview
 

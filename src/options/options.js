@@ -1,33 +1,39 @@
 // src/options/options.js
 
 function loadOptions() {
-    chrome.storage.sync.get(['inactiveThreshold'], (result) => {
-      const input = document.getElementById("inactiveThreshold");
-      if (input) {
-        input.value = result.inactiveThreshold || 60;
-      }
-    });
-  }
-  
-  function saveOptions() {
-    const threshold = parseInt(document.getElementById("inactiveThreshold").value, 10);
-    chrome.storage.sync.set({ inactiveThreshold: threshold }, () => {
-      console.log("Options saved.");
-      alert("Options saved!");
-    });
-  }
-  
-  function initOptions() {
-    const saveButton = document.getElementById("save-options");
-    if (saveButton) {
-      saveButton.addEventListener("click", saveOptions);
+  chrome.storage.sync.get('inactiveThreshold', (data) => {
+    document.getElementById('inactiveThreshold').value = data.inactiveThreshold || 60;
+    if (chrome.runtime.lastError) {
+      console.error('Error loading options:', chrome.runtime.lastError.message);
     }
-  }
-  
-  // Initialize options when the DOM is ready
-  document.addEventListener("DOMContentLoaded", () => {
-    loadOptions();
-    initOptions();
   });
-  
-  module.exports = { loadOptions, saveOptions, initOptions };
+}
+
+function saveOptions() {
+  console.log('saveOptions called');
+  const inactiveThreshold = document.getElementById('inactiveThreshold').value;
+  chrome.storage.sync.set({ inactiveThreshold }, () => {
+    if (chrome.runtime.lastError) {
+      console.error('Error saving options:', chrome.runtime.lastError.message);
+    } else {
+      console.log('Options saved successfully.');
+    }
+  });
+}
+
+// Initialize options when the DOM is ready
+document.addEventListener("DOMContentLoaded", () => {
+  loadOptions();
+  document.getElementById('save-options').addEventListener('click', saveOptions);
+});
+
+// Add global error handlers
+window.addEventListener('error', (event) => {
+  console.error('Global error:', event.message);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection:', event.reason);
+});
+
+export default { loadOptions, saveOptions };

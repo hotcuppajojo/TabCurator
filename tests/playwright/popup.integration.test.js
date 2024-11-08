@@ -6,9 +6,11 @@ import os from 'os';
 
 test.describe('Popup script integration tests', () => {
   let context;
+  let page;
   let extensionId;
 
-  test.beforeAll(async () => {
+  test.beforeEach(async () => {
+    // Set up a new context and page for each test
     const pathToExtension = path.resolve(__dirname, '../../build/chrome');
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'test-user-data-dir-'));
 
@@ -28,28 +30,31 @@ test.describe('Popup script integration tests', () => {
     }
 
     extensionId = background.url().split('/')[2];
+
+    page = await context.newPage();
+    await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
   });
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
+    // Close the context after each test
     await context.close();
   });
 
   test('should load and display tabs in the popup', async () => {
     const page = await context.newPage();
-    await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
-
-    // Mock chrome.tabs.query
-    await page.evaluate(() => {
+  
+    // Mock chrome.tabs.query before navigating to the popup
+    await page.addInitScript(() => {
       window.chrome = window.chrome || {};
-      window.chrome.tabs = {
-        query: (_, callback) => {
+      chrome.tabs = {
+        query: (queryInfo, callback) => {
           callback([{ title: 'Tab 1' }, { title: 'Tab 2' }]);
         },
       };
     });
-
-    await page.reload();
-
+  
+    await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
+  
     const tabListItems = await page.$$('#tab-list div');
     expect(tabListItems.length).toBe(2);
     const tabs = await Promise.all(tabListItems.map(item => item.textContent()));
@@ -79,16 +84,16 @@ test.describe('Popup script integration tests', () => {
   test('should handle errors gracefully', async () => {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
-
-    // Mock chrome.runtime.sendMessage to throw an error
+  
+    // Mock chrome.runtime.sendMessage to simulate an error
     await page.evaluate(() => {
       window.chrome = window.chrome || {};
       window.chrome.runtime = {
-        sendMessage: () => {
-          throw new Error('Simulated error');
+        sendMessage: (message, callback) => {
+          chrome.runtime.lastError = { message: 'Simulated error' };
+          if (callback) callback();
         },
       };
-      // Capture console errors
       window.consoleMessages = [];
       const originalError = console.error;
       console.error = (message) => {
@@ -96,9 +101,12 @@ test.describe('Popup script integration tests', () => {
         originalError(message);
       };
     });
-
+  
     await page.click('#suspend-inactive-tabs');
+  
     const consoleMessages = await page.evaluate(() => window.consoleMessages || []);
+    console.log(consoleMessages); // For debugging
+  
     expect(consoleMessages.some(msg => msg.includes('Simulated error'))).toBe(true);
   });
 });
