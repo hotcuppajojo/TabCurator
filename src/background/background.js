@@ -16,18 +16,21 @@ if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
 browser.tabs.onActivated.addListener(activeInfo => {
   const tabId = activeInfo.tabId;
   tabActivity[tabId] = Date.now();
+  console.log(`Tab activated: ${tabId}`);
 });
 
 // Update the last active time when a tab is updated
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete') {
     tabActivity[tabId] = Date.now();
+    console.log(`Tab updated: ${tabId}`);
   }
 });
 
 // Remove tab from activity tracking when it's closed
 browser.tabs.onRemoved.addListener(tabId => {
   delete tabActivity[tabId];
+  console.log(`Tab removed: ${tabId}`);
 });
 
 // Function to suspend a tab (discard it)

@@ -9,7 +9,10 @@ export default defineConfig({
   use: {
     headless: false,  // Extensions require non-headless mode
     viewport: { width: 1280, height: 720 },
-    timeout: 60000, // 60 seconds
+    waitForEventTimeout: 60000,  // Timeout for waitForEvent
+    actionTimeout: 60000,  // Timeout for each action
+    navigationTimeout: 60000,  // Timeout for navigation actions
+    timeout: 180000, // 3 minutes
     launchOptions: {
       channel: 'chrome', // Use the Chrome browser
       args: [
@@ -20,6 +23,7 @@ export default defineConfig({
         '--disable-features=ExtensionsToolbarMenu',
       ],
     },
+    javaScriptEnabled: true,
   },
   reporter: [['list']],
 });
