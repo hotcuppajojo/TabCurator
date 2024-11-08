@@ -2,8 +2,6 @@
 
 ## An Advanced Cross-Browser Tab Management Extension
 
-## Project Overview
-
 TabCurator is a browser extension designed to streamline tab management for users who handle multiple tabs daily. Key features include intelligent grouping, memory optimization through tab suspension, and session management across Chrome, Firefox, and Safari.
 
 ## Features
@@ -29,14 +27,21 @@ TabCurator/
 │   ├── content/            # Content scripts
 │   └── options/            # Options/settings page
 ├── browsers/               # Browser-specific configuration files
-│   └── chrome/             # Chrome-specific configuration
+│   ├── chrome/             # Chrome-specific configuration
+│   ├── firefox/            # Firefox-specific configuration
+│   └── safari/             # Safari-specific configuration
 ├── build/                  # Build output directory
 ├── build-scripts/          # Scripts for building extensions per browser
-├── tests/                  # Jest test files for each component
+├── dist/                   # Distribution files
+├── tests/                  # Test files
+│   ├── playwright/         # Playwright integration tests
+│   └── jest/               # Jest unit tests
 ├── .github/workflows/      # CI/CD workflow files for automated builds and deployments
+├── test-results/           # Test result artifacts
 ├── LICENSE                 # License file
 ├── README.md               # Project documentation
-└── package.json            # Node.js dependencies and scripts
+├── package.json            # Node.js dependencies and scripts
+└── playwright.config.js    # Playwright configuration
 ```
 
 ## License

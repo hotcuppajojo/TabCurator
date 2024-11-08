@@ -61,3 +61,9 @@ coverage/
 firefox-cache/
 chrome-cache/
 safari-cache/
+
+# Test results
+test-results/
+
+# Temporary files
+.tmp/
