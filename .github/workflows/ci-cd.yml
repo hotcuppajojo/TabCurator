@@ -1,0 +1,79 @@
+# .github/workflows/ci-cd.yml
+
+name: TabCurator CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - develop
+      - chrome-release
+      - firefox-release
+      - safari-release
+    tags:
+      - 'v*'
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        browser: [chrome, firefox, safari]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build for ${{ matrix.browser }}
+        run: |
+          npm run build-${{ matrix.browser }}
+
+      - name: Upload Build Artifacts
+        if: success()
+        uses: actions/upload-artifact@v2
+        with:
+          name: tabcurator-${{ matrix.browser }}-build
+          path: build/${{ matrix.browser }}/
+
+  deploy:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        browser: [chrome, firefox, safari]
+    if: >
+      (github.ref == 'refs/heads/main') ||
+      startsWith(github.ref, 'refs/heads/chrome-release') ||
+      startsWith(github.ref, 'refs/heads/firefox-release') ||
+      startsWith(github.ref, 'refs/heads/safari-release') ||
+      startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: tabcurator-${{ matrix.browser }}-build
+          path: build/${{ matrix.browser }}/
+
+      - name: Package extension for ${{ matrix.browser }}
+        run: npm run package-${{ matrix.browser }}-release
+
+      - name: Deploy to Browser Store
+        run: npm run deploy-${{ matrix.browser }}
+        env:
+          CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          FIREFOX_API_KEY: ${{ secrets.FIREFOX_API_KEY }}
+          SAFARI_API_KEY: ${{ secrets.SAFARI_API_KEY }}
