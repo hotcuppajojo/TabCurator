@@ -1,16 +1,12 @@
 // src/background/background.js
+
 console.log("Background service worker started.");
+
 // Polyfill for browser APIs to ensure cross-browser compatibility
-// Safari uses the 'browser' namespace similarly to Firefox
-const browser = typeof browser === 'undefined' ? chrome : browser;
+const browser = typeof browser !== 'undefined' ? browser : (typeof chrome !== 'undefined' ? chrome : {});
 
 // Store the last active time for each tab
 const tabActivity = {};
-
-// Ensure tabActivity is available for testing
-if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
-  global.tabActivity = tabActivity;
-}
 
 // Update the last active time when a tab is activated
 browser.tabs.onActivated.addListener(activeInfo => {
@@ -33,6 +29,27 @@ browser.tabs.onRemoved.addListener(tabId => {
   console.log(`Tab removed: ${tabId}`);
 });
 
+// Define inactivity threshold in milliseconds (default 60 minutes)
+const INACTIVITY_THRESHOLD = 60 * 60 * 1000;
+
+// Function to detect inactive tabs
+async function getInactiveTabs() {
+  const now = Date.now();
+  const inactiveTabs = [];
+
+  const tabs = await browser.tabs.query({});
+
+  tabs.forEach(tab => {
+    const lastActive = tabActivity[tab.id] || now;
+    const timeInactive = now - lastActive;
+    if (!tab.active && timeInactive > INACTIVITY_THRESHOLD) {
+      inactiveTabs.push(tab);
+    }
+  });
+
+  return inactiveTabs;
+}
+
 // Function to suspend a tab (discard it)
 async function suspendTab(tabId) {
   if (browser.tabs.discard) {
@@ -43,25 +60,28 @@ async function suspendTab(tabId) {
       console.error(`Failed to suspend tab ${tabId}:`, error);
     }
   } else {
-    console.warn(`Discard API not supported in this browser. Unable to suspend tab ${tabId}.`);
-    // Alternative logic (e.g., close the tab or notify the user)
+    console.warn(`Discard API not supported. Unable to suspend tab ${tabId}.`);
   }
 }
 
 // Periodically check and suspend inactive tabs
 async function checkForInactiveTabs() {
   const now = Date.now();
-  const defaultThreshold = 60 * 1000 * 60; // 60 minutes
 
   try {
-    const { inactiveThreshold = 60 } = await browser.storage.sync.get('inactiveThreshold');
-    const thresholdMillis = inactiveThreshold * 60 * 1000;
+    const { inactiveThreshold = 60 } = await new Promise((resolve) => {
+      browser.storage.sync.get('inactiveThreshold', (result) => {
+        resolve(result);
+      });
+    });
 
+    const thresholdMillis = inactiveThreshold * 60 * 1000;
     const tabs = await browser.tabs.query({});
+
     for (const tab of tabs) {
       const lastActive = tabActivity[tab.id] || now;
       if (!tab.active && now - lastActive > thresholdMillis) {
-        await suspendTab(tab.id);
+        await module.exports.suspendTab(tab.id); // Updated to use the exported suspendTab
       }
     }
   } catch (error) {
@@ -84,7 +104,6 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     checkForInactiveTabs();
     sendResponse({ message: "Inactive tabs suspended" });
   }
-  // Return true to indicate asynchronous response if needed
   return true;
 });
 
@@ -100,9 +119,15 @@ if (typeof self !== 'undefined' && self.addEventListener) {
 }
 
 // Initial check for inactive tabs
-checkForInactiveTabs();
+if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
+  checkForInactiveTabs();
+}
 
 // Expose functions and data for testing
 if (typeof module !== 'undefined') {
-  module.exports = { checkForInactiveTabs, tabActivity };
+  module.exports = {
+    checkForInactiveTabs,
+    suspendTab,
+    tabActivity,
+  };
 }

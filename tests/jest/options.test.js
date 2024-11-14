@@ -1,6 +1,6 @@
 // tests/jest/options.test.js
 
-const { loadOptions, saveOptions, initOptions } = require("../../src/options/options");
+const { loadOptions, saveOptions } = require("../../src/options/options").default;
 
 describe("Options script", () => {
   beforeEach(() => {
@@ -10,15 +10,14 @@ describe("Options script", () => {
       <button id="save-options">Save</button>
     `;
 
-    // Mock the chrome.storage API
-    global.chrome = {
-      storage: {
-        sync: {
-          get: jest.fn((_, callback) => callback({ inactiveThreshold: 60 })),
-          set: jest.fn()
-        }
-      }
-    };
+    // Mock the chrome.storage API responses
+    chrome.storage.sync.get.mockImplementation((keys, callback) => {
+      callback({ inactiveThreshold: 60 });
+    });
+
+    chrome.storage.sync.set.mockImplementation((data, callback) => {
+      callback();
+    });
   });
 
   it("should load saved options", () => {
@@ -28,16 +27,17 @@ describe("Options script", () => {
   });
 
   it("should save new options", () => {
-    initOptions(); // Sets up the save button event listener
+    // Initialize options to set up event listeners
+    document.getElementById("save-options").addEventListener("click", saveOptions);
 
     // Set a new value for the threshold and trigger the save
     const input = document.getElementById("inactiveThreshold");
     input.value = "30";
     document.getElementById("save-options").click();
 
-    // Verify that the new value is saved to chrome.storage
+    // Verify that the new value is saved to chrome.storage with a number
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(
-      expect.objectContaining({ inactiveThreshold: 30 }),
+      { inactiveThreshold: 30 },
       expect.any(Function)
     );
   });

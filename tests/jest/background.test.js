@@ -1,46 +1,41 @@
 // tests/jest/background.test.js
 
 describe("Background script", () => {
+  let background;
+  let selfAddEventListenerSpy;
+
   beforeAll(() => {
     // Ensure NODE_ENV is set to 'test'
     process.env.NODE_ENV = 'test';
+
     // Mock Date.now to return a fixed timestamp
     const fixedNow = Date.now();
     jest.spyOn(Date, 'now').mockImplementation(() => fixedNow);
+
     // Mock the browser APIs used in the background script
-    global.chrome = {
-      runtime: {
-        onMessage: {
-          addListener: jest.fn(),
-        },
-      },
-      tabs: {
-        onCreated: { addListener: jest.fn() },
-        onUpdated: { addListener: jest.fn() },
-        onActivated: { addListener: jest.fn() },
-        onRemoved: { addListener: jest.fn() }, // Mock for onRemoved listener
-        query: jest.fn(() => Promise.resolve([])), // Mock for tabs.query
-        discard: jest.fn(() => Promise.resolve()), // Mock for tabs.discard
-      },
-      alarms: {
-        create: jest.fn(),
-        onAlarm: { addListener: jest.fn() },
-      },
-      storage: {
-        sync: {
-          get: jest.fn(() => Promise.resolve({ inactiveThreshold: 60 })), // Updated mock
-        },
-      },
+    chrome.runtime.onMessage.addListener.mockImplementation(() => {});
+    chrome.tabs.onCreated.addListener.mockImplementation(() => {});
+    chrome.tabs.onUpdated.addListener.mockImplementation(() => {});
+    chrome.tabs.onActivated.addListener.mockImplementation(() => {});
+    chrome.tabs.onRemoved.addListener.mockImplementation(() => {});
+    chrome.alarms.create.mockImplementation(() => {});
+    chrome.alarms.onAlarm.addListener.mockImplementation(() => {});
+    chrome.storage.sync.get.mockImplementation((keys, callback) => callback({ inactiveThreshold: 60 }));
+    chrome.storage.sync.set.mockImplementation((data, callback) => callback());
+
+    // Mock global.self for Service Worker
+    global.self = {
+      addEventListener: jest.fn(),
     };
 
-    global.browser = global.chrome; // Define browser as chrome
+    // Spy on self.addEventListener
+    selfAddEventListenerSpy = jest.spyOn(global.self, 'addEventListener');
 
-    /// Mock global self object for Service Worker
-    global.self = {};
-    global.self.addEventListener = jest.fn();
+    // Load the background script after setting up the mocks and spies
+    background = require("../../src/background/background.js");
 
-    // Load the background script after setting up the mocks
-    require("../../src/background/background.js");
+    // Spy on suspendTab function after loading the background script
+    jest.spyOn(background, 'suspendTab').mockImplementation(() => Promise.resolve());
   });
 
   afterAll(() => {
@@ -62,8 +57,8 @@ describe("Background script", () => {
   });
 
   it("should add global error and rejection listeners", () => {
-    expect(self.addEventListener).toHaveBeenCalledWith("error", expect.any(Function));
-    expect(self.addEventListener).toHaveBeenCalledWith("unhandledrejection", expect.any(Function));
+    expect(selfAddEventListenerSpy).toHaveBeenCalledWith("error", expect.any(Function));
+    expect(selfAddEventListenerSpy).toHaveBeenCalledWith("unhandledrejection", expect.any(Function));
   });
 
   it("should suspend inactive tabs when the message is received", async () => {
@@ -86,20 +81,19 @@ describe("Background script", () => {
       { id: 1, active: false },
       { id: 2, active: false },
     ]);
-  
+
     const inactiveThreshold = 60; // Default threshold in minutes
     const thresholdMillis = inactiveThreshold * 60 * 1000;
-  
-    // Add properties to the existing tabActivity object
-    global.tabActivity[1] = now - thresholdMillis - 1; // Tab 1 is inactive beyond threshold
-    global.tabActivity[2] = now; // Tab 2 is recently active
-  
-    // Import the checkForInactiveTabs function
-    const { checkForInactiveTabs } = require("../../src/background/background.js");
-    await checkForInactiveTabs();
-  
+
+    // Update the tabActivity in the background module
+    background.tabActivity[1] = now - thresholdMillis - 1; // Tab 1 is inactive beyond threshold
+    background.tabActivity[2] = now; // Tab 2 is recently active
+
+    // Call the function under test
+    await background.checkForInactiveTabs();
+
     // Verify if the suspendTab function was called for the inactive tab
-    expect(chrome.tabs.discard).toHaveBeenCalledWith(1);
-    expect(chrome.tabs.discard).not.toHaveBeenCalledWith(2);
+    expect(background.suspendTab).toHaveBeenCalledWith(1);
+    expect(background.suspendTab).not.toHaveBeenCalledWith(2);
   });
 });

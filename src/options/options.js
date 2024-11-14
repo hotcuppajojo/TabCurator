@@ -1,18 +1,18 @@
 // src/options/options.js
 
 function loadOptions() {
-  chrome.storage.sync.get('inactiveThreshold', (data) => {
-    document.getElementById('inactiveThreshold').value = data.inactiveThreshold || 60;
-    if (chrome.runtime.lastError) {
-      console.error('Error loading options:', chrome.runtime.lastError.message);
-    }
+  chrome.storage.sync.get("inactiveThreshold", (data) => {
+    const input = document.getElementById("inactiveThreshold");
+    input.value = data.inactiveThreshold || 0;
   });
 }
 
 function saveOptions() {
   console.log('saveOptions called');
-  const inactiveThreshold = document.getElementById('inactiveThreshold').value;
-  chrome.storage.sync.set({ inactiveThreshold }, () => {
+  const input = document.getElementById("inactiveThreshold");
+  const threshold = parseInt(input.value, 10) || 0; // Convert to number and handle NaN
+
+  chrome.storage.sync.set({ inactiveThreshold: threshold }, () => {
     if (chrome.runtime.lastError) {
       console.error('Error saving options:', chrome.runtime.lastError.message);
     } else {
@@ -20,6 +20,7 @@ function saveOptions() {
     }
   });
 }
+
 
 // Initialize options when the DOM is ready
 document.addEventListener("DOMContentLoaded", () => {
