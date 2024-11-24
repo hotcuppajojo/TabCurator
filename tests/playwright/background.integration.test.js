@@ -16,14 +16,18 @@ test.describe('Background script integration tests', () => {
 
     context = await chromium.launchPersistentContext(userDataDir, {
       headless: false,
+      channel: 'chrome',
       args: [
         `--disable-extensions-except=${pathToExtension}`,
         `--load-extension=${pathToExtension}`,
         '--no-sandbox',
         '--disable-web-security',
+        '--disable-features=ExtensionsToolbarMenu',
       ],
-      channel: 'chrome',
     });
+
+    // Open a blank page to ensure extension pages are loaded
+    await context.newPage();
 
     // Wait for the service worker to register and get the extension ID
     const [background] = await Promise.all([
@@ -47,15 +51,23 @@ test.describe('Background script integration tests', () => {
   });
 
   test('should set up tab and alarm listeners in the background', async () => {
-    const alarms = await serviceWorker.evaluate(() => {
-      // Mock chrome.alarms API
-      self.chrome = self.chrome || {};
-      self.chrome.alarms = {
-        getAll: () => Promise.resolve([{ name: 'checkForInactiveTabs' }]),
+    const listeners = await serviceWorker.evaluate(() => {
+      return {
+        onActivated: chrome.tabs.onActivated.hasListener(() => {}),
+        onUpdated: chrome.tabs.onUpdated.hasListener(() => {}),
+        onRemoved: chrome.tabs.onRemoved.hasListener(() => {}),
+        onCreated: chrome.tabs.onCreated.hasListener(() => {}),
+        onAlarmCreated: typeof chrome.alarms.create === 'function',
+        onAlarmListener: chrome.alarms.onAlarm.hasListener(() => {}),
       };
-      return self.chrome.alarms.getAll();
     });
-    expect(alarms.some(alarm => alarm.name === 'checkForInactiveTabs')).toBeTruthy();
+
+    expect(listeners.onActivated).toBe(true);
+    expect(listeners.onUpdated).toBe(true);
+    expect(listeners.onRemoved).toBe(true);
+    expect(listeners.onCreated).toBe(true);
+    expect(listeners.onAlarmCreated).toBe(true);
+    expect(listeners.onAlarmListener).toBe(true);
   });
 
   test('should listen for tab events', async () => {

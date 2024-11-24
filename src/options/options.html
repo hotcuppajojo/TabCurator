@@ -1,23 +1,35 @@
 <!-- src/options/options.html -->
 <!DOCTYPE html>
+<!-- standard HTML5 boilerplate for modern browser compatibility -->
 <html lang="en">
 <head>
+  <!-- UTF-8 ensures proper text encoding for all languages -->
   <meta charset="UTF-8">
+  <!-- responsive viewport meta ensures proper scaling on mobile devices -->
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TabCurator Options</title>
+  <!-- separate CSS file for better maintainability and caching -->
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
+  <!-- h1 for semantic structure and accessibility -->
   <h1>TabCurator Options</h1>
+  <!-- wrapper div for each option to maintain consistent spacing -->
   <div>
+    <!-- explicit label-input association using 'for' attribute for accessibility -->
     <label for="inactiveThreshold">Inactivity threshold (minutes):</label>
+    <!-- min=1 prevents negative or zero values which would be invalid -->
     <input type="number" id="inactiveThreshold" min="1" value="60">
   </div>
   <div>
+    <!-- consistent pattern for option layout improves UX -->
     <label for="tabLimit">Maximum Number of Tabs:</label>
+    <!-- default value of 100 based on typical user browser behavior -->
     <input type="number" id="tabLimit" min="1" value="100">
   </div>
+  <!-- single action button for simplified user interaction -->
   <button id="save-options">Save</button>
+  <!-- JS loaded at end of body for faster page load -->
   <script src="options.js"></script>
 </body>
 </html>

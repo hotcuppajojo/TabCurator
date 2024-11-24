@@ -2,18 +2,32 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- Ensure proper character encoding and responsive viewport -->
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TabCurator</title>
+  <!-- External CSS for maintainability and separation of concerns -->
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
+  <!-- Simple heading for user orientation -->
   <h1>TabCurator</h1>
+  <!-- Primary action button prominently placed -->
   <button id="suspend-inactive-tabs">Suspend Inactive Tabs</button>
+  <!-- Container for dynamic tab list -->
   <div id="tab-list">
-    <!-- Tabs will be dynamically loaded here -->
+    <!-- Dynamic content insertion point -->
   </div>
 
+  <!-- Modal positioned center-screen with subtle elevation -->
+  <div id="tagging-prompt" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, -20%); 
+       padding:20px; background-color:white; border:1px solid #ccc; box-shadow:0 2px 10px rgba(0,0,0,0.1);">
+    <!-- Clear user instruction for required action -->
+    <p>You have exceeded the tab limit. Please tag the oldest tab to allow new tabs.</p>
+    <button id="tag-oldest-tab">Tag Oldest Tab</button>
+  </div>
+
+  <!-- Module type script for better dependency management -->
   <script type="module" src="popup.js"></script>
 </body>
 </html>

@@ -16,9 +16,13 @@ test.describe('Popup script integration tests', () => {
 
     context = await chromium.launchPersistentContext(userDataDir, {
       headless: false,
+      channel: 'chrome',
       args: [
         `--disable-extensions-except=${pathToExtension}`,
-        `--load-extension=${pathToExtension}`
+        `--load-extension=${pathToExtension}`,
+        '--no-sandbox',
+        '--disable-web-security',
+        '--disable-features=ExtensionsToolbarMenu',
       ],
     });
 

@@ -16,41 +16,28 @@ test.describe('Options page integration tests', () => {
 
     context = await chromium.launchPersistentContext(userDataDir, {
       headless: false,
+      channel: 'chrome',
       args: [
         `--disable-extensions-except=${pathToExtension}`,
         `--load-extension=${pathToExtension}`,
         '--no-sandbox',
         '--disable-web-security',
+        '--disable-features=ExtensionsToolbarMenu',
       ],
-      channel: 'chrome',
     });
 
-    // Inject a script before any other scripts run to monitor event listener registrations
-    await context.addInitScript(() => {
-      window.errorHandlerExists = false;
-      window.rejectionHandlerExists = false;
+    // Open a blank page to ensure extension pages are loaded
+    await context.newPage();
 
-      const originalAddEventListener = window.addEventListener;
-      window.addEventListener = (type, listener, options) => {
-        if (type === 'error') window.errorHandlerExists = true;
-        if (type === 'unhandledrejection') window.rejectionHandlerExists = true;
-        originalAddEventListener.call(window, type, listener, options);
-      };
-    });
-
-    // Wait for the service worker to register and get the extension ID
-    const [background] = await Promise.all([
-      context.waitForEvent('serviceworker', worker =>
-        worker.url().includes('background/background.js')
-      ),
-      context.pages(),
-    ]);
-
+    // Wait for background service worker to activate
+    const [background] = context.serviceWorkers();
     if (!background) {
-      throw new Error('Service worker not found. Extension may not have loaded properly.');
+      await context.waitForEvent('serviceworker');
     }
 
-    extensionId = background.url().split('/')[2];
+    // Retrieve the extension ID from background worker URL
+    const serviceWorker = context.serviceWorkers()[0];
+    extensionId = serviceWorker.url().split('/')[2];
 
     page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/src/options/options.html`);
@@ -59,6 +46,29 @@ test.describe('Options page integration tests', () => {
   test.afterEach(async () => {
     // Close the context after each test to ensure isolation
     await context.close();
+  });
+
+  test('should load and display saved options', async () => {
+    const thresholdValue = await page.inputValue('#inactiveThreshold');
+    const tabLimitValue = await page.inputValue('#tabLimit');
+
+    expect(thresholdValue).toBe('60');
+    expect(tabLimitValue).toBe('100');
+  });
+
+  test('should save new options correctly', async () => {
+    await page.fill('#inactiveThreshold', '45');
+    await page.fill('#tabLimit', '80');
+    await page.click('#save-options');
+
+    // Refresh the page to verify saved values
+    await page.reload();
+
+    const thresholdValue = await page.inputValue('#inactiveThreshold');
+    const tabLimitValue = await page.inputValue('#tabLimit');
+
+    expect(thresholdValue).toBe('45');
+    expect(tabLimitValue).toBe('80');
   });
 
   test('should handle global errors and rejections', async () => {
