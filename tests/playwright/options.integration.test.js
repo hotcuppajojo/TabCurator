@@ -1,51 +1,44 @@
 // tests/playwright/options.integration.test.js
-import { test, expect, chromium } from '@playwright/test';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
+
+const { test, expect } = require('@playwright/test');
+const { injectBrowserMock } = require('./mocks/browserMock');
+const { getExtensionId } = require('./setup'); // Ensure this utility fetches your extension ID
 
 test.describe('Options page integration tests', () => {
-  let context;
+  let browserContext;
   let page;
   let extensionId;
 
-  test.beforeEach(async () => {
-    // Set up a new context and page for each test
-    const pathToExtension = path.resolve(__dirname, '../../build/chrome');
-    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'test-user-data-dir-'));
+  test.beforeEach(async ({ }, testInfo) => {
+    try {
+      const setup = await getExtensionId();
+      browserContext = setup.context;
+      extensionId = setup.extensionId;
 
-    context = await chromium.launchPersistentContext(userDataDir, {
-      headless: false,
-      channel: 'chrome',
-      args: [
-        `--disable-extensions-except=${pathToExtension}`,
-        `--load-extension=${pathToExtension}`,
-        '--no-sandbox',
-        '--disable-web-security',
-        '--disable-features=ExtensionsToolbarMenu',
-      ],
-    });
+      // Create a new page
+      page = await browserContext.newPage();
 
-    // Open a blank page to ensure extension pages are loaded
-    await context.newPage();
+      // Inject the browser mock before navigating to the page
+      await injectBrowserMock(page);
 
-    // Wait for background service worker to activate
-    const [background] = context.serviceWorkers();
-    if (!background) {
-      await context.waitForEvent('serviceworker');
+      // Navigate to the options page
+      await page.goto(`chrome-extension://${extensionId}/src/options/options.html`, { timeout: 30000 });
+    } catch (error) {
+      console.error(`Test setup failed: ${testInfo.title}`, error);
+      throw error;
     }
-
-    // Retrieve the extension ID from background worker URL
-    const serviceWorker = context.serviceWorkers()[0];
-    extensionId = serviceWorker.url().split('/')[2];
-
-    page = await context.newPage();
-    await page.goto(`chrome-extension://${extensionId}/src/options/options.html`);
   });
 
   test.afterEach(async () => {
-    // Close the context after each test to ensure isolation
-    await context.close();
+    await browserContext?.close();
+  });
+
+  // Preliminary test to verify that mocks are injected correctly
+  test('should have mock functions injected', async () => {
+    const mockExists = await page.evaluate(() => {
+      return window.browser?._debug?.getMockCalls('storage.sync.set') !== undefined;
+    });
+    expect(mockExists).toBe(true);
   });
 
   test('should load and display saved options', async () => {
@@ -57,29 +50,40 @@ test.describe('Options page integration tests', () => {
   });
 
   test('should save new options correctly', async () => {
-    await page.fill('#inactiveThreshold', '45');
-    await page.fill('#tabLimit', '80');
-    await page.click('#save-options');
+    // Fill in new values
+    await page.fill('#inactiveThreshold', '45', { timeout: 5000 });
+    await page.fill('#tabLimit', '80', { timeout: 5000 });
 
-    // Refresh the page to verify saved values
-    await page.reload();
+    // Click save button
+    await page.click('#save-options', { timeout: 5000 });
 
-    const thresholdValue = await page.inputValue('#inactiveThreshold');
-    const tabLimitValue = await page.inputValue('#tabLimit');
+    // Wait for a short duration to ensure the mock has processed the call
+    await page.waitForTimeout(500); // 500ms delay
 
-    expect(thresholdValue).toBe('45');
-    expect(tabLimitValue).toBe('80');
+    // Verify the storage.sync.set call using our debug helper
+    const calls = await page.evaluate(() => {
+      return window.browser._debug.getMockCalls('storage.sync.set');
+    });
+
+    expect(calls).toBeDefined();
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0][0]).toEqual({ inactiveThreshold: 45, tabLimit: 80 });
+
+    // Wait for the success message to become visible
+    await expect(page.locator('#save-success')).toHaveClass(/visible/, { timeout: 5000 });
+
+    // Optionally, verify that the class has been removed after the timeout
+    await page.waitForTimeout(2500); // Assuming the timeout in saveOptions is 2000ms
+    await expect(page.locator('#save-success')).not.toHaveClass(/visible/);
+
+    // Verify the input values were updated
+    expect(await page.inputValue('#inactiveThreshold')).toBe('45');
+    expect(await page.inputValue('#tabLimit')).toBe('80');
   });
 
   test('should handle global errors and rejections', async () => {
-    const page = await context.newPage();
-
-    // Navigate to the options page
-    await page.goto(`chrome-extension://${extensionId}/src/options/options.html`);
-
-    // Evaluate in the page context
+    // Evaluate in the page context to verify event listeners
     const handlers = await page.evaluate(() => {
-      // Mock window.addEventListener
       let errorHandlerExists = false;
       let rejectionHandlerExists = false;
 

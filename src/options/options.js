@@ -14,25 +14,32 @@ function initOptions(browserInstance = (typeof browser !== 'undefined' ? browser
   }
 
   function saveOptions() {
-    console.log('saveOptions called');
     const thresholdInput = document.getElementById("inactiveThreshold");
     const tabLimitInput = document.getElementById("tabLimit");
+    const successMsg = document.getElementById('save-success');
 
-    // Fallback values prevent extension crashes from invalid input
-    const threshold = parseInt(thresholdInput.value, 10) || 60; // Default to 60 minutes
-    const tabLimit = parseInt(tabLimitInput.value, 10) || 100; // Default to 100 tabs
+    const threshold = parseInt(thresholdInput.value, 10) || 60;
+    const tabLimit = parseInt(tabLimitInput.value, 10) || 100;
 
-    // Sync storage enables multi-device settings persistence
-    browserInstance.storage.sync.set({ inactiveThreshold: threshold, tabLimit: tabLimit }, () => {
-      // Runtime error handling for robustness
-      if (browserInstance.runtime.lastError) {
-        console.error('Error saving options:', browserInstance.runtime.lastError.message);
-        alert('Failed to save options. Please try again.');
-      } else {
-        console.log('Options saved successfully.');
-        alert('Options saved successfully.');
+    browserInstance.storage.sync.set(
+      { inactiveThreshold: threshold, tabLimit: tabLimit },
+      () => {
+        if (browserInstance.runtime.lastError) {
+          console.error('Error saving options:', browserInstance.runtime.lastError.message);
+          alert('Failed to save options. Please try again.');
+        } else {
+          if (successMsg) {
+            // Show message immediately
+            successMsg.classList.add('visible');
+            
+            // Remove after delay
+            setTimeout(() => {
+              successMsg.classList.remove('visible');
+            }, 2000);
+          }
+        }
       }
-    });
+    );
   }
 
   // Defer initialization until DOM ensures element availability
@@ -55,4 +62,9 @@ function initOptions(browserInstance = (typeof browser !== 'undefined' ? browser
 }
 
 // Enable module usage in test environment
-module.exports = initOptions;
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = initOptions;
+} else {
+  // Initialize options in the browser
+  initOptions();
+}

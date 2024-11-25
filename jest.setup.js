@@ -57,3 +57,8 @@ global.self = {
     return handler;
   })
 };
+
+// Mock requestAnimationFrame to simulate frame updates
+global.requestAnimationFrame = (callback) => {
+  setTimeout(callback, 0);
+};

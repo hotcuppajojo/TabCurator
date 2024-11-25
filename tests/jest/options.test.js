@@ -8,52 +8,81 @@ describe("Options script", () => {
   let options;
 
   beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
     mockBrowser = createMockBrowser();
-
-    // Mock HTML structure for each test
+    
+    // Mock 'browser.storage.sync.set' to return a resolved promise
+    mockBrowser.storage.sync.set.mockResolvedValue();
+    
+    // Setup DOM elements
     document.body.innerHTML = `
-      <input id="inactiveThreshold" type="number" value="0">
-      <input id="tabLimit" type="number" value="0">
+      <input id="inactiveThreshold" type="number" value="60">
+      <input id="tabLimit" type="number" value="100">
       <button id="save-options">Save</button>
+      <div id="save-success">Options saved successfully</div>
     `;
-
-    // Mock window.alert
-    global.alert = jest.fn();
-
-    // Initialize options with mock browser
+    
+    // Mock requestAnimationFrame
+    window.requestAnimationFrame = jest.fn(cb => cb());
+    
     options = initOptions(mockBrowser);
+    global.alert = jest.fn();
   });
 
-  it("should load saved options", () => {
+  it("should load stored options", () => {
+    mockBrowser.storage.sync.get.mockImplementation((keys, callback) => {
+      callback({ inactiveThreshold: 30, tabLimit: 50 });
+    });
+
     options.loadOptions();
-    const thresholdInput = document.getElementById("inactiveThreshold");
-    const tabLimitInput = document.getElementById("tabLimit");
-    expect(thresholdInput.value).toBe("60");
-    expect(tabLimitInput.value).toBe("100");
+
+    expect(document.getElementById("inactiveThreshold").value).toBe("30");
+    expect(document.getElementById("tabLimit").value).toBe("50");
   });
 
-  it("should save new options", () => {
-    options.loadOptions();
-
-    // Initialize saveOptions to set up event listeners
-    document.getElementById("save-options").addEventListener("click", options.saveOptions);
-
-    // Set new values for the threshold and tab limit and trigger the save
+  it("should save new options", async () => {
     const thresholdInput = document.getElementById("inactiveThreshold");
     const tabLimitInput = document.getElementById("tabLimit");
+    
+    thresholdInput.value = "45";
+    tabLimitInput.value = "75";
+    
+    // Override requestAnimationFrame for this test
+    const originalRAF = window.requestAnimationFrame;
+    let rafCallback;
+    window.requestAnimationFrame = jest.fn(cb => {
+      rafCallback = cb;
+      return 1;
+    });
+    
+    options.saveOptions();
 
-    thresholdInput.value = "30";
-    tabLimitInput.value = "50";
+    // Execute storage callback
+    mockBrowser.storage.sync.set.mock.calls[0][1]();
 
-    document.getElementById("save-options").click();
+    // Execute rAF callback if it was set
+    if (rafCallback) {
+      rafCallback();
+    }
 
-    // Verify that the new values are saved to storage.sync with numbers
+    // Run timers
+    jest.advanceTimersByTime(0);
+    await Promise.resolve();
+
     expect(mockBrowser.storage.sync.set).toHaveBeenCalledWith(
-      { inactiveThreshold: 30, tabLimit: 50 },
+      { inactiveThreshold: 45, tabLimit: 75 },
       expect.any(Function)
     );
 
-    // Verify that alert was called
-    expect(global.alert).toHaveBeenCalledWith('Options saved successfully.');
+    const successMsg = document.getElementById('save-success');
+    expect(successMsg.classList.contains('visible')).toBe(true);
+
+    // Restore original requestAnimationFrame
+    window.requestAnimationFrame = originalRAF;
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 });

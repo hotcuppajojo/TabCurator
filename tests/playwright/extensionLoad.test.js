@@ -23,7 +23,7 @@ test.describe('Extension Load Test', () => {
   test('should load the extension in Chrome', async () => {
     // Wait for the service worker to register
     const serviceWorker = await context.waitForEvent('serviceworker', worker =>
-      worker.url().includes('src/background/background.js')
+      worker.url().includes('src/background/background.js') // Updated path
     );
 
     if (!serviceWorker) {

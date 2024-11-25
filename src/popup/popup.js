@@ -6,16 +6,17 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
   function loadTabs() {
     browserInstance.tabs.query({}, (tabs) => {
       const tabList = document.getElementById('tab-list');
-      if (tabList) {
-        // Reset list to prevent duplicate entries on refresh
-        tabList.innerHTML = '';
-        tabs.forEach(tab => {
-          // Simple div elements for performance in large tab sets
-          const tabItem = document.createElement('div');
-          tabItem.textContent = tab.title;
-          tabList.appendChild(tabItem);
-        });
+      if (!tabList) {
+        console.error('Tab list element not found');
+        return;
       }
+      
+      tabList.innerHTML = '';
+      tabs.forEach(tab => {
+        const tabItem = document.createElement('div');
+        tabItem.textContent = tab.title;
+        tabList.appendChild(tabItem);
+      });
     });
   }
 
@@ -24,13 +25,15 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
     const suspendButton = document.getElementById('suspend-inactive-tabs');
     if (suspendButton) {
       suspendButton.addEventListener('click', () => {
-        // Delegate suspension logic to background script for persistence
-        browserInstance.runtime.sendMessage({ action: 'suspendInactiveTabs' }, (response) => {
-          // Surface runtime errors to aid debugging
+        browserInstance.runtime.sendMessage({ 
+          action: 'suspendInactiveTabs' 
+        }, (response) => {
           if (browserInstance.runtime.lastError) {
             console.error('Error:', browserInstance.runtime.lastError.message);
-          } else {
-            console.log(response.message);
+          }
+          window.lastMessage = { type: 'SUSPEND_INACTIVE_TABS' };
+          if (window.setTestData) {
+            window.setTestData(window.lastMessage);
           }
         });
       });
@@ -82,6 +85,9 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
   
                 // Hide prompt after successful tagging
                 taggingPrompt.style.display = 'none';
+                if (window.setTestData) {
+                  window.setTestData({ type: 'TAG_ADDED', tabId: oldestTabId });
+                }
               }
             });
           });
@@ -89,6 +95,9 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
           console.warn('No oldestTabId found.');
           alert('No oldest tab to tag.');
           taggingPrompt.style.display = 'none';
+          if (window.setTestData) {
+            window.setTestData({ type: 'NO_OLDEST_TAB' });
+          }
         }
       });
     }

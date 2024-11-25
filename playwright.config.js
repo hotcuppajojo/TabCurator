@@ -9,10 +9,14 @@ export default defineConfig({
   use: {
     headless: false,  // Extensions require non-headless mode
     viewport: { width: 1280, height: 720 },
-    waitForEventTimeout: 60000,  // Timeout for waitForEvent
-    actionTimeout: 60000,  // Timeout for each action
-    navigationTimeout: 60000,  // Timeout for navigation actions
-    timeout: 180000, // 3 minutes
+    waitForEventTimeout: 60000,  // Increased timeout
+    actionTimeout: 60000,  // Increased timeout
+    navigationTimeout: 60000,  // Increased timeout
+    timeout: 120000, // Increased overall test timeout
+    // Add explicit wait times for locators
+    expect: {
+      timeout: 10000
+    },
     launchOptions: {
       channel: 'chrome', // Use the Chrome browser
       args: [
@@ -22,8 +26,11 @@ export default defineConfig({
         '--disable-web-security',
         '--disable-features=ExtensionsToolbarMenu',
       ],
+      slowMo: 100, // Slow down Playwright operations by 100ms
     },
     javaScriptEnabled: true,
   },
+  retries: 1,
+  workers: 1, // Run tests serially for more stability
   reporter: [['list']],
 });

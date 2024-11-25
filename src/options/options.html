@@ -7,6 +7,8 @@
   <meta charset="UTF-8">
   <!-- responsive viewport meta ensures proper scaling on mobile devices -->
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Add CSP meta tag -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'">
   <title>TabCurator Options</title>
   <!-- separate CSS file for better maintainability and caching -->
   <link rel="stylesheet" href="options.css">
@@ -29,6 +31,7 @@
   </div>
   <!-- single action button for simplified user interaction -->
   <button id="save-options">Save</button>
+  <div id="save-success">Options saved successfully</div>
   <!-- JS loaded at end of body for faster page load -->
   <script src="options.js"></script>
 </body>

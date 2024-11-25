@@ -270,7 +270,16 @@ browserInstance.tabs.onCreated.addListener(async (tab) => {
 // Support both direct usage and testing scenarios
 module.exports = initBackground;
 
-// Initialize only in production to prevent test environment conflicts
-if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
-  initBackground();
-}
+// Initialize background script regardless of environment
+initBackground();
+
+// Example of service worker registration (ensure the path is correct)
+self.addEventListener('install', event => {
+  console.log('Service Worker installing.');
+  // ...existing code...
+});
+
+self.addEventListener('activate', event => {
+  console.log('Service Worker activating.');
+  // ...existing code...
+});
