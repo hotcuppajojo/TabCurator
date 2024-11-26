@@ -21,17 +21,12 @@ test.describe('Extension Load Test', () => {
   });
 
   test('should load the extension in Chrome', async () => {
-    // Wait for the service worker to register
-    const serviceWorker = await context.waitForEvent('serviceworker', worker =>
-      worker.url().includes('src/background/background.js') // Updated path
-    );
+    const serviceWorker = await context.waitForEvent('serviceworker', {
+      predicate: (worker) => worker.url().includes('background/background.js'),
+      timeout: 60000 // Increase timeout
+    });
 
-    if (!serviceWorker) {
-      throw new Error('Service worker not found. Extension may not have loaded properly.');
-    }
-
-    const extensionId = serviceWorker.url().split('/')[2];
-    console.log(`Extension ID: ${extensionId}`);
-    expect(extensionId).toBeDefined();
-  });
+    expect(serviceWorker).toBeTruthy();
+    expect(serviceWorker.url()).toContain('background/background.js');
+  }, 60000); // Increase test timeout
 });

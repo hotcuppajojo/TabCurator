@@ -24,19 +24,22 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
   function setupSuspendButton() {
     const suspendButton = document.getElementById('suspend-inactive-tabs');
     if (suspendButton) {
+      console.log('Attaching click event to suspend button');
       suspendButton.addEventListener('click', () => {
-        browserInstance.runtime.sendMessage({ 
-          action: 'suspendInactiveTabs' 
-        }, (response) => {
+        console.log('Suspend button clicked');
+        const message = { action: 'suspendInactiveTabs' };
+
+        browserInstance.runtime.sendMessage(message, (response) => {
           if (browserInstance.runtime.lastError) {
             console.error('Error:', browserInstance.runtime.lastError.message);
-          }
-          window.lastMessage = { type: 'SUSPEND_INACTIVE_TABS' };
-          if (window.setTestData) {
-            window.setTestData(window.lastMessage);
+            // Handle the error as needed
+          } else {
+            console.log('Suspend inactive tabs successful:', response);
           }
         });
       });
+    } else {
+      console.error('Suspend button not found');
     }
   }
 
@@ -82,7 +85,7 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
                     console.log(response.message);
                   }
                 });
-  
+
                 // Hide prompt after successful tagging
                 taggingPrompt.style.display = 'none';
                 if (window.setTestData) {
@@ -103,21 +106,48 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
     }
   }
 
-// Listen for background script tagging requests
-browserInstance.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'promptTagging') {
-    document.getElementById('tagging-prompt').style.display = 'block';
-  }
-});
+  // Listen for background script tagging requests
+  browserInstance.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'promptTagging') {
+      document.getElementById('tagging-prompt').style.display = 'block';
+      sendResponse({ message: 'Tagging prompt displayed.' }); // Acknowledge the message
+    }
+  });
 
-// Initialize components after DOM load to ensure element availability
-document.addEventListener('DOMContentLoaded', () => {
-  setupSuspendButton();
-  loadTabs();
-  setupTaggingPrompt();
-});
+  // Add global error handler
+  window.addEventListener('error', (event) => {
+    const errorData = { error: event.message };
+    if (window.setTestData) {
+      window.setTestData(errorData);
+    }
+    console.error('Error:', event.message);
+  });
 
-return { loadTabs, setupSuspendButton, setupTaggingPrompt };
+  // Add global unhandledrejection handler
+  window.addEventListener('unhandledrejection', (event) => {
+    const rejectionData = { reason: event.reason };
+    if (window.setTestData) {
+      window.setTestData(rejectionData);
+    }
+    console.error('Unhandled Rejection:', event.reason);
+  });
+
+  // Initialize components after DOM load to ensure element availability
+  document.addEventListener('DOMContentLoaded', () => {
+    setupSuspendButton();
+    loadTabs();
+    setupTaggingPrompt();
+  });
+
+  return { loadTabs, setupSuspendButton, setupTaggingPrompt };
 }
 
-module.exports = initPopup;
+// Support both module exports and global initialization
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = initPopup;
+} else {
+  // Auto-initialize when loaded as script
+  window.addEventListener('DOMContentLoaded', () => {
+    window.popupInstance = initPopup(window.browser || chrome);
+  });
+}

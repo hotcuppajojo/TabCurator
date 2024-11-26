@@ -10,9 +10,9 @@ export default defineConfig({
     headless: false,  // Extensions require non-headless mode
     viewport: { width: 1280, height: 720 },
     waitForEventTimeout: 60000,  // Increased timeout
-    actionTimeout: 60000,  // Increased timeout
-    navigationTimeout: 60000,  // Increased timeout
-    timeout: 120000, // Increased overall test timeout
+    actionTimeout: 15000,  // Increased timeout
+    navigationTimeout: 30000,  // Increased timeout
+    timeout: 60000, // Increased overall test timeout
     // Add explicit wait times for locators
     expect: {
       timeout: 10000
@@ -26,11 +26,12 @@ export default defineConfig({
         '--disable-web-security',
         '--disable-features=ExtensionsToolbarMenu',
       ],
-      slowMo: 100, // Slow down Playwright operations by 100ms
+      slowMo: 50, // Slow down Playwright operations by 50ms
     },
     javaScriptEnabled: true,
   },
   retries: 1,
   workers: 1, // Run tests serially for more stability
   reporter: [['list']],
+  timeout: 60000, // Increase per-test timeout
 });

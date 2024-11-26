@@ -18,11 +18,15 @@ test.describe('Options page integration tests', () => {
       // Create a new page
       page = await browserContext.newPage();
 
-      // Inject the browser mock before navigating to the page
+      // **Inject the browser mock before navigating to the options page**
       await injectBrowserMock(page);
 
-      // Navigate to the options page
+      // Navigate to the options page after mock injection
       await page.goto(`chrome-extension://${extensionId}/src/options/options.html`, { timeout: 30000 });
+
+      // Wait for the service worker to initialize
+      await page.waitForFunction(() => !!window.browser, { timeout: 10000 });
+
     } catch (error) {
       console.error(`Test setup failed: ${testInfo.title}`, error);
       throw error;

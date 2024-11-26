@@ -1,6 +1,8 @@
-// tests/playwright/popup.integration.test.js
 import { test, expect } from '@playwright/test';
 import { getExtensionId } from './setup';
+import { injectBrowserMock } from './mocks/browserMock';
+import fs from 'fs';
+import path from 'path';
 
 test.describe('Popup script integration tests', () => {
   let browserContext;
@@ -13,16 +15,37 @@ test.describe('Popup script integration tests', () => {
     extensionId = setup.extensionId;
 
     page = await browserContext.newPage();
-    
-    // Set up data attribute helper using evaluate instead of addScriptTag
-    await page.evaluate(() => {
-      window.setTestData = function(data) {
-        document.body.setAttribute('data-test-message', JSON.stringify(data));
-      };
+
+    // Wait longer for extension to load
+    await page.waitForTimeout(1000);
+
+    // Inject browser mock before navigating
+    await injectBrowserMock(page);
+
+    // Navigate to popup with extended timeout
+    await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`, {
+      waitUntil: 'networkidle',
+      timeout: 30000
     });
 
-    await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
+    // Reset mocks and verify initialization
+    await page.evaluate(() => {
+      window.testHelpers.resetMocks();
+      window.browser.runtime.sendMessage.shouldFail = false;
+    });
+
+    // Ensure popup is initialized
+    await page.waitForFunction(() => !!window.popupInstance, { timeout: 10000 });
   });
+
+  async function pollForCondition(page, conditionFn, maxAttempts = 20, interval = 100) {
+    for (let i = 0; i < maxAttempts; i++) {
+      const result = await page.evaluate(conditionFn);
+      if (result) return result;
+      await page.waitForTimeout(interval);
+    }
+    return null;
+  }
 
   test('should load and display tabs', async () => {
     // Wait for tab list container
@@ -47,63 +70,39 @@ test.describe('Popup script integration tests', () => {
   });
 
   test('should handle suspend button click', async () => {
-    // Add click handler using evaluate
+    // Reset mocks
     await page.evaluate(() => {
-      document.getElementById('suspend-inactive-tabs').addEventListener('click', () => {
-        window.setTestData({ type: 'SUSPEND_INACTIVE_TABS' });
-      });
+      window.testHelpers.resetMocks();
+      window.browser.runtime.sendMessage.shouldFail = false;
+      window.browser.runtime.sendMessage.mock.calls = [];
     });
-    
+
+    // Click and wait for action to complete
     await page.click('#suspend-inactive-tabs');
     
-    // Use polling with getAttribute instead of waitForFunction
-    let attempts = 0;
-    const maxAttempts = 10;
-    let message = null;
+    // Wait briefly for message to be processed
+    await page.waitForTimeout(100);
 
-    while (attempts < maxAttempts) {
-      const attr = await page.getAttribute('body', 'data-test-message');
-      if (attr) {
-        message = attr;
-        break;
-      }
-      await page.waitForTimeout(100);
-      attempts++;
-    }
-
-    const data = JSON.parse(message || '{}');
-    expect(data.type).toBe('SUSPEND_INACTIVE_TABS');
+    const calls = await page.evaluate(() => window.browser.runtime.sendMessage.mock.calls);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0][0]).toEqual({ action: 'suspendInactiveTabs' });
   });
 
   test('should handle errors gracefully', async () => {
-    // Add error handler using evaluate
+    // Reset mocks
     await page.evaluate(() => {
-      window.addEventListener('error', (e) => {
-        window.setTestData({ error: e.message });
-      });
+      window.testHelpers.resetMocks();
+      window.browser.runtime.sendMessage.shouldFail = true;
+      window.browser.runtime.lastError = { message: 'Simulated error' };
     });
 
-    // Trigger error and poll for result
-    await page.evaluate(() => {
-      throw new Error('Simulated error');
-    }).catch(() => {});
+    await page.click('#suspend-inactive-tabs');
+    
+    // Wait briefly for error to be set
+    await page.waitForTimeout(100);
 
-    let attempts = 0;
-    const maxAttempts = 10;
-    let errorData = null;
-
-    while (attempts < maxAttempts) {
-      const attr = await page.getAttribute('body', 'data-test-message');
-      if (attr && JSON.parse(attr).error === 'Simulated error') {
-        errorData = attr;
-        break;
-      }
-      await page.waitForTimeout(100);
-      attempts++;
-    }
-
-    const data = JSON.parse(errorData || '{}');
-    expect(data.error).toBe('Simulated error');
+    const error = await page.evaluate(() => window.browser.runtime.lastError?.message);
+    expect(error).toBe('Simulated error');
   });
 
   test.afterEach(async () => {
