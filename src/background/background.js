@@ -273,6 +273,9 @@ module.exports = initBackground;
 // Initialize background script regardless of environment
 initBackground();
 
+// Expose initBackground globally for test accessibility
+self.initBackground = initBackground;
+
 // Example of service worker registration (ensure the path is correct)
 self.addEventListener('install', event => {
   console.log('Service Worker installing.');

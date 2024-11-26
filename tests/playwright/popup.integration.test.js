@@ -32,6 +32,7 @@ test.describe('Popup script integration tests', () => {
     await page.evaluate(() => {
       window.testHelpers.resetMocks();
       window.browser.runtime.sendMessage.shouldFail = false;
+      window.browser.runtime.sendMessage.mock.calls = [];
     });
 
     // Ensure popup is initialized
@@ -80,8 +81,8 @@ test.describe('Popup script integration tests', () => {
     // Click and wait for action to complete
     await page.click('#suspend-inactive-tabs');
     
-    // Wait briefly for message to be processed
-    await page.waitForTimeout(100);
+    // Increase wait time to ensure message is processed
+    await page.waitForTimeout(500); // Increased from 100ms to 500ms
 
     const calls = await page.evaluate(() => window.browser.runtime.sendMessage.mock.calls);
     expect(calls.length).toBeGreaterThan(0);

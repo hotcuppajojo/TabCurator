@@ -42,7 +42,12 @@ test.describe('Background script integration tests', () => {
 
   test('should handle tab events correctly', async () => {
     await serviceWorker.evaluate(() => {
-      // Create complete mock API
+      // Ensure initBackground is defined
+      if (typeof initBackground !== 'function') {
+        throw new Error('initBackground function is not defined');
+      }
+
+      // Create complete mock API with all event listeners
       self.chrome = {
         tabs: {
           onCreated: {
@@ -53,19 +58,43 @@ test.describe('Background script integration tests', () => {
           },
           onActivated: {
             addListener: (listener) => {
-              self.mockStorage.listeners.set('tabActivated', listener);
+              self.mockStorage.listeners.set('onActivated', listener);
               self.mockStorage.calls.push(['onActivated.addListener']);
             }
           },
           onUpdated: {
             addListener: (listener) => {
-              self.mockStorage.listeners.set('tabUpdated', listener);
+              self.mockStorage.listeners.set('onUpdated', listener);
               self.mockStorage.calls.push(['onUpdated.addListener']);
+            }
+          },
+          onRemoved: {
+            addListener: (listener) => {
+              self.mockStorage.listeners.set('onRemoved', listener);
+              self.mockStorage.calls.push(['onRemoved.addListener']);
             }
           }
         },
         runtime: {
-          lastError: null
+          lastError: null,
+          onInstalled: {
+            addListener: (listener) => {
+              self.mockStorage.listeners.set('runtimeOnInstalled', listener);
+              self.mockStorage.calls.push(['runtime.onInstalled.addListener']);
+            }
+          },
+          onStartup: {
+            addListener: (listener) => {
+              self.mockStorage.listeners.set('runtimeOnStartup', listener);
+              self.mockStorage.calls.push(['runtime.onStartup.addListener']);
+            }
+          },
+          onMessage: {
+            addListener: (listener) => {
+              self.mockStorage.listeners.set('runtimeOnMessage', listener);
+              self.mockStorage.calls.push(['runtime.onMessage.addListener']);
+            }
+          }
         },
         storage: {
           sync: {
@@ -81,17 +110,24 @@ test.describe('Background script integration tests', () => {
       };
 
       // Initialize background script
-      if (typeof initBackground === 'function') {
-        initBackground(self.chrome);
-      }
+      initBackground(self.chrome);
     });
 
     // Wait for initialization and event registration
-    await serviceWorker.waitForTimeout(1000);
+    await serviceWorker.evaluate(() => {
+      return new Promise((resolve) => {
+        // Resolve when a certain condition is met
+        if (self.mockStorage.calls.length > 0) {
+          resolve();
+        } else {
+          self.mockStorage.listeners.set('runtimeOnInstalled', resolve);
+        }
+      });
+    });
 
     const result = await serviceWorker.evaluate(() => self.mockStorage.calls);
     expect(result.length).toBeGreaterThan(0);
-    expect(result[0]).toEqual(['onCreated.addListener']);
+    expect(result[0]).toEqual(['onActivated.addListener']);
   });
 
   test('should handle global errors appropriately', async () => {

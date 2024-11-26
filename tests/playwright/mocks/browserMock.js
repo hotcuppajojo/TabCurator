@@ -84,10 +84,7 @@ const injectBrowserMock = async (page) => {
         lastError: null,
         onMessage: { addListener: createMockFn() },
         sendMessage: createMockFn((message, callback) => {
-          const mockFn = window.browser.runtime.sendMessage;
-          mockFn.mock.calls.push([message]);
-
-          if (mockFn.shouldFail) {
+          if (window.browser.runtime.sendMessage.shouldFail) {
             window.browser.runtime.lastError = { message: 'Simulated error' };
             if (callback) {
               callback();
