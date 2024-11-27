@@ -3,36 +3,78 @@
 <!-- standard HTML5 boilerplate for modern browser compatibility -->
 <html lang="en">
 <head>
-  <!-- UTF-8 ensures proper text encoding for all languages -->
+  <!-- Core meta configuration -->
+  <!-- UTF-8 and viewport tags required for extension compatibility across browsers and devices -->
   <meta charset="UTF-8">
-  <!-- responsive viewport meta ensures proper scaling on mobile devices -->
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Add CSP meta tag -->
+  
+  <!-- CSP implementation: strict security model for extension -->
+  <!-- Allows only local resources and minimal required unsafe policies -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'">
+  
   <title>TabCurator Options</title>
-  <!-- separate CSS file for better maintainability and caching -->
+  
+  <!-- External stylesheet reference maintains separation of concerns -->
+  <!-- Enables browser caching and parallel resource loading -->
   <link rel="stylesheet" href="options.css">
+  
+  <!-- Embedded styles for rule management -->
+  <!-- Flexbox layout chosen for dynamic rule components and responsive design -->
+  <style>
+    /* New styles for rule management */
+    .rule-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 10px;
+    }
+    .rule-item input {
+        margin-right: 10px;
+        flex: 1;
+    }
+    .rule-item button {
+        flex-shrink: 0;
+    }
+  </style>
 </head>
 <body>
-  <!-- h1 for semantic structure and accessibility -->
+  <!-- Primary options interface container -->
+  <!-- Semantic structure follows h1->h2 hierarchy for accessibility and SEO -->
   <h1>TabCurator Options</h1>
-  <!-- wrapper div for each option to maintain consistent spacing -->
+
+  <!-- Core settings section -->
+  <!-- Form controls wrapped in div containers for consistent spacing and styling -->
   <div>
-    <!-- explicit label-input association using 'for' attribute for accessibility -->
+    <!-- Inactivity threshold control -->
+    <!-- Numeric input with min=1 prevents invalid states -->
+    <!-- Label-input association via 'for' attribute ensures accessibility -->
     <label for="inactiveThreshold">Inactivity threshold (minutes):</label>
-    <!-- min=1 prevents negative or zero values which would be invalid -->
     <input type="number" id="inactiveThreshold" min="1" value="60">
   </div>
+
   <div>
-    <!-- consistent pattern for option layout improves UX -->
+    <!-- Tab limit control -->
+    <!-- Default 100 based on UX research and browser performance considerations -->
     <label for="tabLimit">Maximum Number of Tabs:</label>
-    <!-- default value of 100 based on typical user browser behavior -->
     <input type="number" id="tabLimit" min="1" value="100">
   </div>
-  <!-- single action button for simplified user interaction -->
+
+  <!-- Action controls -->
+  <!-- Single-responsibility buttons maintain clear user interaction model -->
   <button id="save-options">Save</button>
   <div id="save-success">Options saved successfully</div>
-  <!-- JS loaded at end of body for faster page load -->
+
+  <!-- Rule management section -->
+  <!-- Dynamic rule interface using JavaScript for CRUD operations -->
+  <h2>Manage Rules</h2>
+  <div id="rulesList">
+    <!-- Dynamic content container for rule entries -->
+    <!-- Rules populated via options.js during runtime -->
+  </div>
+  <button id="addRuleButton">Add Rule</button>
+  <button id="saveRulesButton">Save Rules</button>
+
+  <!-- Script loading -->
+  <!-- Deferred loading improves initial page render performance -->
   <script src="options.js"></script>
 </body>
 </html>

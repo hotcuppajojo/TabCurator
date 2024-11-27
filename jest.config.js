@@ -11,7 +11,7 @@ module.exports = {
   testMatch: ["<rootDir>/tests/jest/*.test.js"],
   transform: {
     // Enables modern JS features while maintaining compatibility
-    '^.+\\.js$': 'babel-jest',
+    '^.+\\.js$': 'babel-jest', // Ensure Babel is set up correctly
   },
   // Pre-configures browser API mocks for consistent test behavior
   setupFiles: ["<rootDir>/jest.setup.js"],

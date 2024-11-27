@@ -2,28 +2,55 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <!-- Ensure proper character encoding and responsive viewport -->
+  <!-- Standard meta configuration for Chrome extension popup -->
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TabCurator</title>
-  <!-- External CSS for maintainability and separation of concerns -->
+  <!-- External resources loaded early to prevent FOUC and ensure dependency availability -->
   <link rel="stylesheet" href="popup.css">
   <script src="popup.js"></script>
 </head>
 <body>
-  <!-- Simple heading for user orientation -->
+  <!-- App header - kept minimal to maximize vertical space in popup -->
   <h1>TabCurator</h1>
-  <!-- Primary action button prominently placed -->
+
+  <!-- Primary action zone - positioned at top for immediate accessibility -->
   <button id="suspend-inactive-tabs">Suspend Inactive Tabs</button>
-  <!-- Container for dynamic tab list -->
-  <div id="tab-list">
-    <!-- Dynamic content insertion point -->
+
+  <!-- Dynamic content container - serves as mount point for JS-generated tab list -->
+  <div id="tab-list"></div>
+
+  <!-- Archiving interface component - groups related archiving functionality -->
+  <div>
+    <!-- Input group using semantic label-input association for accessibility -->
+    <label for="tagInput">Tag for Archive:</label>
+    <input id="tagInput" type="text" placeholder="e.g., Research">
+    <!-- Hidden field for maintaining tab context across popup refreshes -->
+    <input id="currentTabId" type="hidden">
+    <button id="archiveTabButton">Archive Current Tab</button>
   </div>
 
-  <!-- Modal positioned center-screen with subtle elevation -->
+  <!-- Archive management section - contains view toggle and display area -->
+  <div>
+    <!-- Trigger for archive display, separated from content area -->
+    <button id="viewArchivesButton">View Archived Tabs</button>
+    <!-- Container for dynamically loaded archive entries -->
+    <div id="archiveList"></div>
+  </div>
+
+  <!-- Session management component - groups session-related operations -->
+  <div>
+    <!-- Session control buttons positioned together for logical grouping -->
+    <button id="saveSessionButton">Save Current Session</button>
+    <button id="viewSessionsButton">View Saved Sessions</button>
+    <!-- Mount point for session list rendering -->
+    <div id="sessionsList"></div>
+  </div>
+
+  <!-- Modal overlay - implemented as fixed position dialog -->
   <div id="tagging-prompt" style="display:none; position:fixed; top:20%; left:50%; transform:translate(-50%, -20%); 
        padding:20px; background-color:white; border:1px solid #ccc; box-shadow:0 2px 10px rgba(0,0,0,0.1);">
-    <!-- Clear user instruction for required action -->
+    <!-- User prompt with clear action requirement -->
     <p>You have exceeded the tab limit. Please tag the oldest tab to allow new tabs.</p>
     <button id="tag-oldest-tab">Tag Oldest Tab</button>
   </div>

@@ -21,6 +21,8 @@ describe("Options script", () => {
       <input id="tabLimit" type="number" value="100">
       <button id="save-options">Save</button>
       <div id="save-success">Options saved successfully</div>
+      <button id="addRuleButton"></button>
+      <ul id="rulesList"></ul>
     `;
     
     // Mock requestAnimationFrame
@@ -80,6 +82,83 @@ describe("Options script", () => {
 
     // Restore original requestAnimationFrame
     window.requestAnimationFrame = originalRAF;
+  });
+
+  it("should handle errors when loading options", () => {
+    mockBrowser.storage.sync.get.mockImplementation((keys, callback) => {
+      callback({});
+      mockBrowser.runtime.lastError = { message: "Failed to load" };
+    });
+
+    options.loadOptions();
+
+    expect(global.alert).toHaveBeenCalledWith("Failed to load options.");
+  });
+
+  it("should add a new rule to the UI", () => {
+    options.loadOptions();
+    const addRuleButton = document.getElementById("addRuleButton");
+    addRuleButton.click();
+
+    const rulesList = document.getElementById("rulesList");
+    expect(rulesList.children.length).toBe(1);
+    expect(rulesList.children[0].querySelector(".rule-condition").value).toBe("");
+    expect(rulesList.children[0].querySelector(".rule-action").value).toBe("");
+  });
+
+  it("should delete a rule from the UI", () => {
+    options.loadOptions();
+    const addRuleButton = document.getElementById("addRuleButton");
+    addRuleButton.click();
+
+    let rulesList = document.getElementById("rulesList");
+    const deleteButton = rulesList.children[0].querySelector("button");
+    deleteButton.click();
+
+    expect(rulesList.children.length).toBe(0);
+  });
+
+  it("should save rules successfully", () => {
+    mockBrowser.storage.sync.set.mockResolvedValue();
+
+    options.loadOptions();
+    const addRuleButton = document.getElementById("addRuleButton");
+    addRuleButton.click();
+
+    const rulesList = document.getElementById("rulesList");
+    const ruleItem = rulesList.children[0];
+    const conditionInput = ruleItem.querySelector(".rule-condition");
+    const actionInput = ruleItem.querySelector(".rule-action");
+
+    conditionInput.value = "test.com";
+    actionInput.value = "Tag: Test";
+
+    const saveRulesButton = document.getElementById("saveRulesButton");
+    saveRulesButton.click();
+
+    expect(mockBrowser.storage.sync.set).toHaveBeenCalledWith(
+      { rules: [{ condition: "test.com", action: "Tag: Test" }] },
+      expect.any(Function)
+    );
+
+    expect(global.alert).toHaveBeenCalledWith("Rules saved successfully!");
+  });
+
+  it("should handle errors when saving options", () => {
+    mockBrowser.storage.sync.set.mockImplementation((items, callback) => {
+      mockBrowser.runtime.lastError = { message: "Save failed" };
+      callback();
+    });
+
+    const thresholdInput = document.getElementById("inactiveThreshold");
+    const tabLimitInput = document.getElementById("tabLimit");
+
+    thresholdInput.value = "45";
+    tabLimitInput.value = "75";
+
+    options.saveOptions();
+
+    expect(global.alert).toHaveBeenCalledWith("Failed to save options. Please try again.");
   });
 
   afterEach(() => {

@@ -1,18 +1,58 @@
 /* src/options/options.css */
+
+/* Options page core styles
+ * Uses fixed positioning and transitions for notification overlays
+ * Implements a flex-based rule item layout system
+ */
+
+/* Toast notification styling - fixed position with transition effects
+ * Positioned top-right for conventional alert placement
+ * Uses visibility+opacity for smooth fade transitions */
 #save-success {
   position: fixed;
   top: 20px;
   right: 20px;
   padding: 10px;
-  background-color: #4CAF50;
+  background-color: #4CAF50; /* Material design success green */
   color: white;
   border-radius: 4px;
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.1s ease-out;
+  transition: opacity 0.1s ease-out; /* Quick fade for responsive feedback */
 }
 
+/* Active state for toast notification
+ * Maintains same position while controlling visibility */
 #save-success.visible {
   opacity: 1;
   visibility: visible;
+}
+
+/* Rule item container using flex layout
+ * Provides consistent spacing and alignment for rule entry rows */
+.rule-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+/* Rule input field styling
+ * Flex-grow allows input to fill available space
+ * Maintains spacing with adjacent elements */
+.rule-item input {
+  margin-right: 10px;
+  flex: 1; /* Takes remaining space in flex container */
+}
+
+/* Rule action button styling
+ * Prevents button from shrinking in flex context */
+.rule-item button {
+  flex-shrink: 0;
+}
+
+/* Validation state styling
+ * Uses red border to highlight input errors
+ * Applied dynamically via .invalid class */
+input.invalid {
+  border-color: red;
 }
