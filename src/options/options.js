@@ -2,33 +2,45 @@
 
 /**
  * @fileoverview Options management module for TabCurator extension
- * Handles user preferences, rule configuration, and storage interaction
- * Implements browser-agnostic storage API wrapper for Chrome/Firefox compatibility
+ * Implements configuration interface and storage management
+ * Provides browser-agnostic storage operations for Chrome/Firefox compatibility
+ * Handles user preferences, rule configuration, and real-time validation
  */
 
 /**
- * @param {object} browserInstance - Browser API instance (Chrome or Firefox)
- * @returns {Object} Public API for options management
+ * Initializes options management system with browser API abstraction
+ * Implements storage sync and UI event handling
+ * @param {object} browserInstance - Browser API instance for cross-browser support
+ * @returns {Object} Public API for options management operations
  */
 function initOptions(browserInstance = (typeof browser !== 'undefined' ? browser : chrome)) {
   /**
-   * Retrieves and populates option values from browser storage
-   * Uses batch storage request for performance optimization
+   * Loads user preferences from browser storage
+   * Implements batch retrieval for performance optimization
+   * Handles fallback to default values
    */
   function loadOptions() {
     browserInstance.storage.sync.get(["inactiveThreshold", "tabLimit"], (data) => {
+      if (browserInstance.runtime.lastError) {
+        console.error('Error loading options:', browserInstance.runtime.lastError.message);
+        alert('Failed to load options.');
+        return;
+      }
+      
       const thresholdInput = document.getElementById("inactiveThreshold");
-      thresholdInput.value = data.inactiveThreshold || 60;
-
       const tabLimitInput = document.getElementById("tabLimit");
-      tabLimitInput.value = data.tabLimit || 100;
+      
+      if (thresholdInput && tabLimitInput) {
+        thresholdInput.value = data.inactiveThreshold || 60;
+        tabLimitInput.value = data.tabLimit || 100;
+      }
     });
   }
 
   /**
-   * Persists user preferences to browser storage
-   * Implements error handling and success feedback with auto-dismiss
-   * @fires browser.storage.sync.set
+   * Persists user preferences to synchronized storage
+   * Implements visual feedback with auto-dismiss
+   * Maintains data integrity with type conversion
    */
   function saveOptions() {
     const thresholdInput = document.getElementById("inactiveThreshold");
@@ -59,75 +71,63 @@ function initOptions(browserInstance = (typeof browser !== 'undefined' ? browser
     );
   }
 
-  // Initialize event listeners and rule management UI
-  document.addEventListener("DOMContentLoaded", () => {
-    loadOptions();
-    document.getElementById('save-options').addEventListener('click', saveOptions);
+  // Configure core event listeners immediately for responsive UI
+  loadOptions();
+  document.getElementById('save-options').addEventListener('click', saveOptions);
 
-    const rulesList = document.getElementById("rulesList");
-    const addRuleButton = document.getElementById("addRuleButton");
-    const saveRulesButton = document.getElementById("saveRulesButton");
+  // Initialize rule management interface components
+  const rulesList = document.getElementById("rulesList");
+  const addRuleButton = document.getElementById("addRuleButton");
+  const saveRulesButton = document.getElementById("saveRulesButton");
 
-    // Fetch and restore previously saved rules
-    // Default to empty array if no rules exist
-    browserInstance.storage.sync.get("rules", (data) => {
-        const rules = data.rules || [];
-        rules.forEach((rule) => addRuleToUI(rule));
-    });
+  // Configure rule management event handlers
+  addRuleButton?.addEventListener("click", () => {
+    addRuleToUI({ condition: "", action: "" });
+  });
 
-    /**
-     * Rule creation handler
-     * Injects blank rule template for user configuration
-     */
-    addRuleButton.addEventListener("click", () => {
-        addRuleToUI({ condition: "", action: "" });
-    });
-
-    /**
-     * Rule persistence handler
-     * Validates rule completeness before storage
-     * Notifies background process of rule updates
-     */
-    saveRulesButton.addEventListener("click", () => {
-        const rules = [];
-        let isValid = true;
+  /**
+   * Processes and persists rule configuration updates
+   * Implements validation and background service notification
+   */
+  saveRulesButton?.addEventListener("click", () => {
+    const rules = [];
+    let isValid = true;
+    
+    document.querySelectorAll(".rule-item").forEach((item) => {
+        const condition = item.querySelector(".rule-condition").value.trim();
+        const action = item.querySelector(".rule-action").value.trim();
         
-        document.querySelectorAll(".rule-item").forEach((item) => {
-            const condition = item.querySelector(".rule-condition").value.trim();
-            const action = item.querySelector(".rule-action").value.trim();
-            
-            if (condition && action) {
-                rules.push({ condition, action });
-            } else {
-                isValid = false;
-                item.querySelector(".rule-condition").classList.add('invalid');
-                item.querySelector(".rule-action").classList.add('invalid');
-            }
-        });
-        
-        if (!isValid) {
-            alert("Please fill out all rule fields.");
-            return;
+        if (condition && action) {
+            rules.push({ condition, action });
+        } else {
+            isValid = false;
+            item.querySelector(".rule-condition").classList.add('invalid');
+            item.querySelector(".rule-action").classList.add('invalid');
         }
-        
-        browserInstance.storage.sync.set({ rules }, () => {
-            alert("Rules saved successfully!");
-            // Notify background.js about the updated rules
-            browserInstance.runtime.sendMessage({ action: "updateRules", rules }, (response) => {
-                if (browserInstance.runtime.lastError) {
-                    console.error('Error sending updated rules:', browserInstance.runtime.lastError.message);
-                } else {
-                    console.log(response.message);
-                }
-            });
+    });
+    
+    if (!isValid) {
+        alert("Please fill out all rule fields.");
+        return;
+    }
+    
+    browserInstance.storage.sync.set({ rules }, () => {
+        alert("Rules saved successfully!");
+        // Notify background.js about the updated rules
+        browserInstance.runtime.sendMessage({ action: "updateRules", rules }, (response) => {
+            if (browserInstance.runtime.lastError) {
+                console.error('Error sending updated rules:', browserInstance.runtime.lastError.message);
+            } else {
+                console.log(response.message);
+            }
         });
     });
   });
 
   /**
-   * Creates and injects rule UI components
-   * Implements input validation and delete functionality
-   * @param {Object} rule - Rule configuration {condition, action}
+   * Creates rule configuration UI components
+   * Implements real-time validation and deletion controls
+   * @param {Object} rule - Rule definition with condition and action
    */
   function addRuleToUI(rule) {
     // Create container for rule components
@@ -182,24 +182,28 @@ function initOptions(browserInstance = (typeof browser !== 'undefined' ? browser
   }
 
   /**
-   * Global error handlers for debugging and telemetry
-   * Captures uncaught exceptions and promise rejections
+   * Global error boundary implementation
+   * Captures uncaught exceptions for monitoring
    */
   window.addEventListener('error', (event) => {
     console.error('Global error:', event.message);
   });
 
+  /**
+   * Promise rejection handler for async operations
+   * Implements centralized error logging
+   */
   window.addEventListener('unhandledrejection', (event) => {
     console.error('Unhandled promise rejection:', event.reason);
   });
 
-  // Public API surface for external interaction
+  // Expose public interface for external integration
   return { loadOptions, saveOptions };
 }
 
 /**
  * Module export configuration
- * Supports both testing environment and browser context
+ * Implements conditional initialization for test/browser environments
  */
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = initOptions;
