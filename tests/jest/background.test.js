@@ -1,3 +1,4 @@
+// tests/jest/background.test.js
 // Tests background service worker core functionality with isolated mock environment
 
 const { createMockBrowser } = require("./mocks/browserMock");
@@ -225,11 +226,10 @@ describe("Background script", () => {
       const rule = { condition: 'example.com', action: 'Tag: Research' };
       const tab = { id: 1, url: 'https://example.com/page', title: 'Example Page' };
       
-      // Fix storage mock implementation
-      mockBrowser.storage.sync.get.mockImplementation((key, callback) => {
+      // Corrected mock implementation to return Promise without callback
+      mockBrowser.storage.sync.get.mockImplementation((key) => {
         const data = { rules: [rule] };
-        if (callback) callback(data);
-        return Promise.resolve(data);
+        return Promise.resolve({ [key]: data[key] });
       });
 
       await background.applyRulesToTab(tab, mockBrowser);
@@ -379,18 +379,22 @@ describe("Background script", () => {
     test("should not apply rules when url doesn't match", async () => {
       const rule = { condition: 'nonmatching.com', action: 'Tag: Work', tag: 'Work' };
       const newTab = { id: 4, url: 'https://example.com/new2', title: 'Another New Tab' };
-      
-      mockBrowser.storage.sync.get.mockImplementation(async (key, callback) => {
+
+      // Corrected mock implementation to return Promise without callback
+      mockBrowser.storage.sync.get.mockImplementation((key) => {
         if (key === "rules") {
-          callback({ rules: [rule] });
+          return Promise.resolve({ rules: [rule] });
         }
+        return Promise.resolve({ [key]: null });
       });
 
       const onCreatedListener = mockBrowser.tabs.onCreated.addListener.mock.calls[0][0];
 
       await onCreatedListener(newTab);
+      await flushPromises();
 
-      expect(background.applyRulesToTab).toHaveBeenCalledWith(newTab);
+      // Updated assertion to include both arguments
+      expect(background.applyRulesToTab).toHaveBeenCalledWith(newTab, mockBrowser);
       expect(mockBrowser.tabs.remove).not.toHaveBeenCalledWith(4);
     });
   });
