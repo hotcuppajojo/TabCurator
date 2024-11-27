@@ -22,32 +22,29 @@ global.chrome = {
     onMessage: createMockListener(),
     sendMessage: jest.fn(),
     lastError: null,
-    onInstalled: createMockListener(),
+    onInstalled: {
+      addListener: jest.fn((callback) => {
+        // Store the callback for later use
+        global.chrome.runtime.onInstalled.callback = callback;
+      }),
+      callback: null // Add storage for the callback
+    },
   },
   // Mocks storage for testing data persistence scenarios
   storage: {
     sync: {
-      get: jest.fn().mockImplementation((keys, callback) => {
+      get: jest.fn((key) => {
         const defaultData = {
           inactiveThreshold: 60,
           tabLimit: 100,
-          rules: [{ keyword: 'example', action: 'archive', tag: 'testTag' }]
+          rules: [{ condition: 'example.com', action: 'Tag: Research' }],
+          savedSessions: {}
         };
-        const result = {};
-        if (Array.isArray(keys)) {
-          keys.forEach(key => {
-            result[key] = defaultData[key];
-          });
-        } else if (typeof keys === 'string') {
-          result[keys] = defaultData[keys];
-        } else {
-          Object.assign(result, defaultData);
-        }
-        callback && callback(result);
-        return Promise.resolve(result);
+        return Promise.resolve({ [key]: defaultData[key] });
       }),
-      set: jest.fn((items, callback) => {
-        callback && callback();
+      set: jest.fn((items) => {
+        // Optionally update internal state if needed
+        return Promise.resolve();
       }),
     },
     local: {
