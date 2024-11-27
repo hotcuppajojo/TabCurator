@@ -1,10 +1,18 @@
 // src/popup/popup.js
 
-// Factory function pattern provides scoped instance and browser compatibility wrapper
-// Allows for dependency injection of browser API for testing
+/**
+ * @fileoverview Popup UI controller module for TabCurator extension
+ * Implements user interface interactions and tab management operations
+ * Provides browser-agnostic implementation for Chrome/Firefox compatibility
+ * Manages tab display, actions, and event handling for extension popup
+ */
+
 function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser : chrome)) {
-  // Renders current tab state in popup UI
-  // Uses query API to fetch all tabs and dynamically builds list elements
+  /**
+   * Renders current window's tabs in popup UI
+   * Implements dynamic list generation with XSS protection
+   * @param {object} browserInstance - Browser API instance
+   */
   function loadTabs() {
     // Query with empty filter returns all tabs in current window
     browserInstance.tabs.query({}, (tabs) => {
@@ -25,8 +33,11 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
     });
   }
 
-  // Implements manual tab suspension feature
-  // Uses message passing to communicate with background script
+  /**
+   * Configures tab suspension functionality
+   * Implements message passing to background script
+   * Handles both success and error states for suspension
+   */
   function setupSuspendButton() {
     const suspendButton = document.getElementById('suspend-inactive-tabs');
     if (suspendButton) {
@@ -50,8 +61,11 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
     }
   }
 
-  // Manages workflow for tagging tabs when limit reached
-  // Implements async storage access and tab state management
+  /**
+   * Manages tab tagging workflow when limit is reached
+   * Implements Promise-based storage access for state management
+   * Handles tab title updates and state synchronization
+   */
   function setupTaggingPrompt() {
     const taggingPrompt = document.getElementById('tagging-prompt');
     const tagButton = document.getElementById('tag-oldest-tab');
@@ -118,8 +132,11 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
     }
   }
 
-  // Message handler for background script communication
-  // Implements observer pattern for UI updates
+  /**
+   * Message handler for background script communication
+   * Implements observer pattern for UI state updates
+   * Manages prompt visibility and response acknowledgment
+   */
   browserInstance.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'promptTagging') {
       document.getElementById('tagging-prompt').style.display = 'block';
@@ -127,8 +144,11 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
     }
   });
 
-  // Global error handlers for debugging and testing support
-  // Captures both synchronous and Promise-based errors
+  /**
+   * Global error boundary configuration
+   * Implements both sync and async error capture
+   * Provides test environment error reporting
+   */
   window.addEventListener('error', (event) => {
     const errorData = { error: event.message };
     if (window.setTestData) {
@@ -145,90 +165,137 @@ function initPopup(browserInstance = (typeof browser !== 'undefined' ? browser :
     console.error('Unhandled Rejection:', event.reason);
   });
 
-  // Main initialization routine
-  // Ensures DOM is ready before setting up event handlers
-  document.addEventListener('DOMContentLoaded', () => {
-    // Initialize core tab management features
-    setupSuspendButton();
-    loadTabs();
-    setupTaggingPrompt();
+  // Maintains initialization state for idempotency
+  let isInitialized = false;
 
-    // Tab archiving implementation
-    // Provides tag-based organization of tabs
-    document.getElementById("archiveTabButton").addEventListener("click", () => {
+  /**
+   * Configures all UI event listeners
+   * Implements lazy initialization pattern
+   * Manages archive, session, and tab management features
+   */
+  function initializeEventListeners() {
+    if (isInitialized) return;
+
+    const archiveButton = document.getElementById("archiveTabButton");
+    const viewArchivesButton = document.getElementById("viewArchivesButton");
+    const saveSessionButton = document.getElementById("saveSessionButton");
+    const viewSessionsButton = document.getElementById("viewSessionsButton");
+
+    if (archiveButton) {
+      archiveButton.addEventListener("click", () => {
         const selectedTag = document.getElementById("tagInput").value;
         const tabId = parseInt(document.getElementById("currentTabId").value);
 
         if (selectedTag && tabId) {
-            // Add data-tag attribute to the archived tab element
-            chrome.runtime.sendMessage(
-                { action: "archiveTab", tabId, tag: selectedTag },
-                () => {
-                    alert("Tab archived successfully!");
-                    loadTabs(); // Refresh the tab list after archiving
-                    window.close();
-                }
-            );
-        } else {
-            alert("Please select a tag and tab to archive.");
+          browserInstance.runtime.sendMessage(
+            { action: "archiveTab", tabId, tag: selectedTag },
+            () => {
+              loadTabs();
+              // Check if we're in a test environment
+              if (typeof window !== 'undefined' && window.close) {
+                window.close();
+              }
+            }
+          );
         }
-    });
+      });
+    }
 
-    // Archive viewing implementation
-    // Renders archived tabs grouped by tags
-    document.getElementById("viewArchivesButton").addEventListener("click", () => {
-        chrome.runtime.sendMessage({ action: "getArchivedTabs" }, (response) => {
-            const archiveContainer = document.getElementById("archiveList");
-            archiveContainer.innerHTML = ""; // Clear existing content
+    if (viewArchivesButton) {
+      viewArchivesButton.addEventListener("click", () => {
+        browserInstance.runtime.sendMessage({ action: "getArchivedTabs" }, (response) => {
+          const archiveContainer = document.getElementById("archiveList");
+          if (archiveContainer && response.archivedTabs) {
+            archiveContainer.innerHTML = "";
             Object.entries(response.archivedTabs).forEach(([tag, tabs]) => {
-                const tagHeader = document.createElement("h4");
-                tagHeader.textContent = `Tag: ${tag}`;
-                archiveContainer.appendChild(tagHeader);
-                tabs.forEach((tab) => {
-                    const link = document.createElement("a");
-                    link.href = tab.url;
-                    link.target = "_blank";
-                    link.textContent = tab.title;
-                    archiveContainer.appendChild(link);
-                    archiveContainer.appendChild(document.createElement("br"));
-                });
+              const tagHeader = document.createElement("h4");
+              tagHeader.textContent = `Tag: ${tag}`;
+              archiveContainer.appendChild(tagHeader);
+              tabs.forEach((tab) => {
+                const link = document.createElement("a");
+                link.href = tab.url;
+                link.target = "_blank";
+                link.textContent = tab.title;
+                archiveContainer.appendChild(link);
+                archiveContainer.appendChild(document.createElement("br"));
+              });
             });
+          }
         });
-    });
+      });
+    }
 
-    // Session management implementation
-    // Enables workspace state preservation
-    document.getElementById("saveSessionButton").addEventListener("click", () => {
+    if (saveSessionButton) {
+      saveSessionButton.addEventListener("click", () => {
         const sessionName = prompt("Enter a name for this session:");
         if (sessionName) {
-            chrome.runtime.sendMessage({ action: "saveSession", sessionName });
+          browserInstance.runtime.sendMessage({ action: "saveSession", sessionName });
         }
-    });
+      });
+    }
 
-    // Session restoration implementation
-    // Provides workspace state recovery
-    document.getElementById("viewSessionsButton").addEventListener("click", () => {
-        chrome.runtime.sendMessage({ action: "getSessions" }, (response) => {
-            const sessionsContainer = document.getElementById("sessionsList");
-            sessionsContainer.innerHTML = ""; // Clear existing content
+    if (viewSessionsButton) {
+      viewSessionsButton.addEventListener("click", () => {
+        browserInstance.runtime.sendMessage({ action: "getSessions" }, (response) => {
+          const sessionsContainer = document.getElementById("sessionsList");
+          if (sessionsContainer && response.sessions) {
+            sessionsContainer.innerHTML = "";
             Object.keys(response.sessions).forEach((sessionName) => {
-                const sessionButton = document.createElement("button");
-                sessionButton.textContent = sessionName;
-                sessionButton.addEventListener("click", () => {
-                    chrome.runtime.sendMessage({ action: "restoreSession", sessionName });
-                });
-                sessionsContainer.appendChild(sessionButton);
+              const sessionButton = document.createElement("button");
+              sessionButton.textContent = sessionName;
+              sessionButton.addEventListener("click", () => {
+                browserInstance.runtime.sendMessage({ action: "restoreSession", sessionName });
+              });
+              sessionsContainer.appendChild(sessionButton);
             });
+          }
         });
-    });
-  });
+      });
+    }
 
-  // Expose core functionality for testing and external access
-  return { loadTabs, setupSuspendButton, setupTaggingPrompt };
+    setupSuspendButton();
+    loadTabs();
+    setupTaggingPrompt();
+
+    isInitialized = true;
+  }
+
+  /**
+   * Manages popup initialization lifecycle
+   * Implements DOM readiness check
+   * Ensures single initialization execution
+   */
+  function initialize() {
+    if (document.readyState === 'complete') {
+      initializeEventListeners();
+    } else {
+      document.addEventListener('DOMContentLoaded', initializeEventListeners, { once: true });
+    }
+  }
+
+  // Execute initialization
+  initialize();
+
+  /**
+   * Public API for popup controller
+   * Implements test helper exposure for validation
+   * @returns {Object} Public methods and test utilities
+   */
+  return { 
+    loadTabs, 
+    setupSuspendButton, 
+    setupTaggingPrompt,
+    _testHelpers: {
+      initializeEventListeners
+    }
+  };
 }
 
-// Module system compatibility wrapper
-// Supports both CommonJS and direct browser usage
+/**
+ * Module export configuration
+ * Implements CommonJS and browser global compatibility
+ * Ensures proper initialization based on environment
+ */
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = initPopup;
 } else {

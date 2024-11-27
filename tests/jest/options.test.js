@@ -1,12 +1,27 @@
 // tests/jest/options.test.js
+/**
+ * @fileoverview Test suite for TabCurator options management module
+ * Validates configuration persistence, rule management, and UI interactions
+ * Implements comprehensive mock browser environment for isolated testing
+ * Ensures cross-browser compatibility of options handling
+ */
 
 const { createMockBrowser } = require("./mocks/browserMock");
 const initOptions = require("../../src/options/options");
 
+/**
+ * Primary test suite for options management functionality
+ * Implements isolated testing environment with mocked browser APIs
+ */
 describe("Options script", () => {
   let mockBrowser;
   let options;
 
+  /**
+   * Test environment setup
+   * Implements fresh DOM and mock state for each test
+   * Ensures isolation between test cases
+   */
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
@@ -33,6 +48,10 @@ describe("Options script", () => {
     global.alert = jest.fn();
   });
 
+  /**
+   * Validates options load functionality
+   * Tests storage retrieval and DOM updates
+   */
   it("should load stored options", () => {
     mockBrowser.storage.sync.get.mockImplementation((keys, callback) => {
       callback({ inactiveThreshold: 30, tabLimit: 50 });
@@ -44,6 +63,11 @@ describe("Options script", () => {
     expect(document.getElementById("tabLimit").value).toBe("50");
   });
 
+  /**
+   * Validates options persistence
+   * Tests storage updates and success notification
+   * Implements animation frame handling
+   */
   it("should save new options", async () => {
     const thresholdInput = document.getElementById("inactiveThreshold");
     const tabLimitInput = document.getElementById("tabLimit");
@@ -85,6 +109,10 @@ describe("Options script", () => {
     window.requestAnimationFrame = originalRAF;
   });
 
+  /**
+   * Validates error handling during options loading
+   * Tests user notification for storage failures
+   */
   it("should handle errors when loading options", () => {
     // Set up the error before the get call
     mockBrowser.runtime.lastError = { message: "Failed to load" };
@@ -102,6 +130,10 @@ describe("Options script", () => {
     mockBrowser.runtime.lastError = null;
   });
 
+  /**
+   * Validates rule creation UI functionality
+   * Tests DOM manipulation for rule addition
+   */
   it("should add a new rule to the UI", () => {
     options.loadOptions();
     const addRuleButton = document.getElementById("addRuleButton");
@@ -113,6 +145,10 @@ describe("Options script", () => {
     expect(rulesList.children[0].querySelector(".rule-action").value).toBe("");
   });
 
+  /**
+   * Validates rule deletion UI functionality
+   * Tests DOM cleanup for rule removal
+   */
   it("should delete a rule from the UI", () => {
     options.loadOptions();
     const addRuleButton = document.getElementById("addRuleButton");
@@ -125,6 +161,11 @@ describe("Options script", () => {
     expect(rulesList.children.length).toBe(0);
   });
 
+  /**
+   * Validates rule persistence functionality
+   * Tests storage integration for rule saving
+   * Implements format validation
+   */
   it("should save rules successfully", () => {
     mockBrowser.runtime.lastError = null; // Clear any previous error state
     mockBrowser.storage.sync.set.mockResolvedValue();
@@ -151,6 +192,10 @@ describe("Options script", () => {
     );
   });
 
+  /**
+   * Validates error handling during options saving
+   * Tests user notification for storage failures
+   */
   it("should handle errors when saving options", () => {
     mockBrowser.storage.sync.set.mockImplementation((items, callback) => {
       mockBrowser.runtime.lastError = { message: "Save failed" };
@@ -168,6 +213,10 @@ describe("Options script", () => {
     expect(global.alert).toHaveBeenCalledWith("Failed to save options. Please try again.");
   });
 
+  /**
+   * Test environment cleanup
+   * Restores timer functionality post-test
+   */
   afterEach(() => {
     jest.useRealTimers();
   });
