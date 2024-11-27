@@ -41,7 +41,8 @@ const injectBrowserMock = async (page) => {
             console.log('Mock storage.sync.get called with:', keys);
             const defaultData = {
               inactiveThreshold: '60',
-              tabLimit: '100'
+              tabLimit: '100',
+              rules: [] // Include rules in the default data
             };
             const result = {};
             
@@ -97,7 +98,8 @@ const injectBrowserMock = async (page) => {
             callback({ success: true });
           }
           return Promise.resolve({ success: true });
-        })
+        }),
+        onInstalled: { addListener: createMockFn() } // Add onInstalled mock
       },
       tabs: {
         create: createMockFn((options, callback) => {

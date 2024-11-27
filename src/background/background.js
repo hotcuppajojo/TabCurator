@@ -1,17 +1,82 @@
 // src/background/background.js
 
 // Use dependency injection to support both Chrome and Firefox APIs while enabling test mocks
-function initBackground(browserInstance = (typeof browser !== 'undefined' ? browser : chrome)) {
+function initBackground(browserInstance = (typeof browser !== 'undefined' ? browser : chrome), actionHistoryRef = [], archivedTabsRef = {}) {
   console.log("Background service worker started.");
+
+  // Use the provided references or default to new ones
+  const actionHistory = actionHistoryRef;
+  const archivedTabs = archivedTabsRef;
 
   // Store tab activity in memory for faster lookups and reduced storage API calls
   const tabActivity = {};
 
-  // Conservative default limit to prevent aggressive tab management on first run
+  // Default tab limit
   let TAB_LIMIT = 100;
 
-  // Flag prevents UI race conditions when multiple tag prompts could appear
+  // Prevents multiple simultaneous tagging prompts
   let isTaggingPromptActive = false;
+
+  // Initialize default settings during installation or update
+  browserInstance.runtime.onInstalled.addListener(() => {
+    browserInstance.storage.sync.set({
+      inactiveThreshold: 60,
+      tabLimit: 100,
+      rules: [], // Empty array for user-defined rules
+    });
+    console.log('Default settings initialized.');
+  });
+
+  // Function to archive a tab
+  async function archiveTab(tabId, tag) {
+    try {
+      const tab = await new Promise((resolve, reject) => {
+        browserInstance.tabs.get(tabId, (result) => {
+          if (browserInstance.runtime.lastError) {
+            reject(browserInstance.runtime.lastError);
+          } else {
+            resolve(result);
+          }
+        });
+      });
+
+      archivedTabs[tag] = archivedTabs[tag] || [];
+      archivedTabs[tag].push({
+        title: tab.title,
+        url: tab.url
+      });
+
+      actionHistory.push({
+        type: 'archive',
+        tab,
+        tag
+      });
+
+      await browserInstance.tabs.remove(tabId);
+      console.log(`Tab ${tabId} archived with tag: ${tag}`);
+    } catch (error) {
+      console.error(`Failed to archive tab ${tabId}:`, error);
+    }
+  }
+
+  // Function to undo the last action
+  async function undoLastAction() {
+    const lastAction = actionHistory.pop();
+    if (lastAction && lastAction.type === 'archive') {
+      const newTab = await browserInstance.tabs.create({ 
+        url: lastAction.tab.url,
+        active: true
+      });
+      
+      if (archivedTabs[lastAction.tag]) {
+        archivedTabs[lastAction.tag] = archivedTabs[lastAction.tag]
+          .filter(t => t.url !== lastAction.tab.url);
+      }
+      
+      return newTab;
+    }
+    return null;
+  }
 
   // Track tab activation to maintain accurate usage patterns
   browserInstance.tabs.onActivated.addListener(activeInfo => {
@@ -20,105 +85,64 @@ function initBackground(browserInstance = (typeof browser !== 'undefined' ? brow
     console.log(`Tab activated: ${tabId}`);
   });
 
-  // Update timestamps on page loads to handle refreshes and navigation
-  browserInstance.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // Update the onUpdated listener to ensure actionHistory is populated correctly
+  browserInstance.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete') {
-      tabActivity[tabId] = Date.now();
-      console.log(`Tab updated: ${tabId}`);
+      const storedData = await browserInstance.storage.sync.get('rules');
+      const rules = storedData.rules || [];
+  
+      for (const rule of rules) {
+        if (tab.url.includes(rule.keyword) || tab.title.includes(rule.keyword)) {
+          if (rule.action === 'archive') {
+            await archiveTab(tabId, rule.tag);
+            console.log(`Tab ${tabId} archived based on rule.`);
+          } else if (rule.action === 'suspend') {
+            await suspendTab(tabId);
+            console.log(`Tab ${tabId} suspended based on rule.`);
+          }
+          break;
+        }
+      }
     }
   });
 
-  // Clean up memory when tabs are closed to prevent memory leaks
+  // Remove tab activity when tabs are closed
   browserInstance.tabs.onRemoved.addListener(tabId => {
     delete tabActivity[tabId];
     console.log(`Tab removed: ${tabId}`);
   });
 
-  // Fixed threshold provides predictable behavior for initial implementation
+  // Threshold for inactive tabs (default 60 minutes)
   const INACTIVITY_THRESHOLD = 60 * 60 * 1000;
 
-  // Separate inactive tab detection for reusability and testing
+  // Identify inactive tabs
   async function getInactiveTabs() {
     const now = Date.now();
-    const inactiveTabs = [];
-
-    // Use promises to handle async browser APIs consistently and catch errors
-    const tabs = await new Promise((resolve, reject) => {
-      browserInstance.tabs.query({}, (result) => {
-        if (browserInstance.runtime.lastError) {
-          reject(browserInstance.runtime.lastError);
-        } else {
-          resolve(result);
-        }
-      });
-    });
-
-    // Filter tabs in memory to reduce API calls
-    tabs.forEach(tab => {
+    const tabs = await browserInstance.tabs.query({});
+    return tabs.filter(tab => {
       const lastActive = tabActivity[tab.id] || now;
       const timeInactive = now - lastActive;
-      if (!tab.active && timeInactive > INACTIVITY_THRESHOLD) {
-        inactiveTabs.push(tab);
-      }
+      return !tab.active && timeInactive > INACTIVITY_THRESHOLD;
     });
-
-    return inactiveTabs;
   }
 
-  // Wrap tab suspension in promise for consistent error handling across browsers
+  // Suspend a specific tab
   async function suspendTab(tabId) {
-    // Wrap browser.tabs.discard in Promise for consistent async handling
     if (browserInstance.tabs.discard) {
-      return new Promise((resolve, reject) => {
-        browserInstance.tabs.discard(tabId, () => {
-          if (browserInstance.runtime.lastError) {
-            reject(browserInstance.runtime.lastError);
-          } else {
-            console.log(`Suspended tab ${tabId}`);
-            resolve();
-          }
-        });
-      });
+      await browserInstance.tabs.discard(tabId);
+      console.log(`Tab suspended: ${tabId}`);
     } else {
-      console.warn(`Discard API not supported. Unable to suspend tab ${tabId}.`);
-      return Promise.resolve();
+      console.warn("Tab discard API not supported.");
     }
   }
 
-  // Centralize tab management logic to maintain single source of truth
+  // Check for inactive tabs and handle them
   async function checkForInactiveTabs() {
-    const now = Date.now();
-
     try {
-      // Fetch settings on each check to support real-time updates without restart
-      const settings = await new Promise((resolve, reject) => {
-        browserInstance.storage.sync.get(['inactiveThreshold', 'tabLimit'], (result) => {
-          if (browserInstance.runtime.lastError) {
-            reject(browserInstance.runtime.lastError);
-          } else {
-            resolve(result);
-          }
-        });
-      });
-      
-      // Calculate threshold once to optimize repeated comparisons
-      const thresholdMillis = (settings.inactiveThreshold || 60) * 60 * 1000;
-      const tabLimit = settings.tabLimit || 100;
+      const now = Date.now();
 
-      // Query tabs in single call to minimize API overhead
-      const tabs = await new Promise((resolve, reject) => {
-        browserInstance.tabs.query({}, (result) => {
-          if (browserInstance.runtime.lastError) {
-            reject(browserInstance.runtime.lastError);
-          } else {
-            resolve(result);
-          }
-        });
-      });
-
-      // Handle tab limits before suspension to prioritize user control
-      if (tabs.length > tabLimit && !isTaggingPromptActive) {
-        // Find oldest inactive tab for consistent user experience
+      const tabs = await browserInstance.tabs.query({});
+      if (tabs.length > TAB_LIMIT && !isTaggingPromptActive) {
         const inactiveTabs = tabs.filter(tab => !tab.active);
         if (inactiveTabs.length > 0) {
           const oldestTab = inactiveTabs.reduce((oldest, current) => {
@@ -127,110 +151,61 @@ function initBackground(browserInstance = (typeof browser !== 'undefined' ? brow
             return currentTime < oldestTime ? current : oldest;
           });
 
-          await new Promise((resolve, reject) => {
-            browserInstance.runtime.sendMessage(
-              { action: 'promptTagging', tabId: oldestTab.id },
-              () => {
-                if (browserInstance.runtime.lastError) {
-                  reject(browserInstance.runtime.lastError);
-                } else {
-                  browserInstance.storage.local.set({ oldestTabId: oldestTab.id }, resolve);
-                  isTaggingPromptActive = true;
-                }
-              }
-            );
-          });
-          return;
+          // Trigger tagging prompt
+          browserInstance.runtime.sendMessage(
+            { action: 'promptTagging', tabId: oldestTab.id },
+            () => {
+              isTaggingPromptActive = true;
+              console.log(`Prompting user to tag tab: ${oldestTab.id}`);
+            }
+          );
         }
       }
 
-      // Process tabs sequentially to prevent overwhelming browser resources
+      // Suspend inactive tabs
       for (const tab of tabs) {
-        if (!tab.active) {
-          const lastActive = tabActivity[tab.id] || now;
-          if (now - lastActive > thresholdMillis) {
-            await suspendTab(tab.id);
-          }
+        const lastActive = tabActivity[tab.id] || now;
+        if (!tab.active && now - lastActive > INACTIVITY_THRESHOLD) {
+          await suspendTab(tab.id);
         }
       }
     } catch (error) {
-      // Surface errors for debugging and test validation
-      console.error("Error during inactive tabs check:", error);
-      throw error; // Re-throw for test catching
+      console.error("Error during tab management:", error);
     }
   }
 
-  // Use message passing to maintain clean separation between UI and background logic
+  // Handle messaging from other scripts
   browserInstance.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // Handle tag completion and cleanup state
     if (message.action === 'tagAdded') {
-      const { tabId } = message;
-      console.log(`Tag added to tab ${tabId}`);
-
-      // Remove the oldestTabId from storage
-      browserInstance.storage.local.remove('oldestTabId', () => {
-        if (browserInstance.runtime.lastError) {
-          console.error('Error removing oldestTabId:', browserInstance.runtime.lastError.message);
-        } else {
-          console.log('oldestTabId removed from storage.');
-        }
-      });
-
-      // Reset the tagging prompt flag
+      console.log(`Tag added for tab ${message.tabId}`);
       isTaggingPromptActive = false;
-
+      browserInstance.storage.local.remove('oldestTabId');
       sendResponse({ message: 'Tag processed successfully.' });
-    // Manual suspension trigger for user-initiated actions
     } else if (message.action === 'suspendInactiveTabs') {
-      checkForInactiveTabs();
-      sendResponse({ message: "Inactive tabs suspended" });
+      checkForInactiveTabs().then(() => {
+        sendResponse({ success: true });
+      });
+    } else if (message.action === 'undoLastAction') {
+      // Fix: properly await and handle the undoLastAction result
+      (async () => {
+        try {
+          const result = await undoLastAction();
+          sendResponse({ success: true, result });
+        } catch (error) {
+          console.error('Error in undoLastAction:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true; // Keep message channel open
+    } else {
+      // Handle unrecognized message actions
+      console.warn(`Unhandled message action: ${message.action}`);
+      sendResponse({ success: false, error: 'Unrecognized action.' });
     }
     return true;
   });
 
-  // Monitor new tab creation to enforce limits immediately rather than waiting for periodic checks
-browserInstance.tabs.onCreated.addListener(async (tab) => {
-  // Query only current window tabs to respect per-window limits and reduce overhead
-  const tabs = await new Promise((resolve, reject) => {
-    browserInstance.tabs.query({ currentWindow: true }, (result) => {
-      // ...existing code...
-    });
-  });
-
-  // Check against tab limit before proceeding with expensive operations
-  if (tabs.length > TAB_LIMIT) {
-    // Prevent duplicate prompts which could confuse users and create race conditions
-    if (!isTaggingPromptActive) {
-      // Reuse existing inactive detection logic for consistency
-      const inactiveTabs = await getInactiveTabs();
-      // Only proceed if we have candidates for tagging/suspension
-      if (inactiveTabs.length > 0) {
-        // Find the least recently used tab by comparing timestamps
-        // Default to current time if no activity recorded to handle edge cases
-        const oldestTab = inactiveTabs.reduce((oldest, current) => {
-          // ...existing code...
-        }, inactiveTabs[0]);
-
-        // Notify UI to prompt for tagging before suspending
-        // This maintains user control over tab management
-        browserInstance.runtime.sendMessage({ action: 'promptTagging', tabId: oldestTab.id }, () => {
-          if (browserInstance.runtime.lastError) {
-            // ...existing code...
-          } else {
-            // Store tab ID for recovery if browser crashes during tagging
-            browserInstance.storage.local.set({ oldestTabId: oldestTab.id }, () => {
-              // ...existing code...
-            });
-            // Lock tagging system until user responds
-            isTaggingPromptActive = true;
-          }
-        });
-      }
-    }
-  }
-});
-
-  // Use alarms API for reliable background tasks that persist across browser sessions
+  // Check for inactive tabs periodically
   browserInstance.alarms.create("checkForInactiveTabs", { periodInMinutes: 5 });
 
   browserInstance.alarms.onAlarm.addListener(alarm => {
@@ -239,50 +214,45 @@ browserInstance.tabs.onCreated.addListener(async (tab) => {
     }
   });
 
-  // Centralize error handling to prevent silent failures in background process
-  if (typeof self !== 'undefined' && self.addEventListener) {
-    self.addEventListener('error', (event) => {
-      console.error("Service Worker Error:", event.message, event);
-    });
+  // Initialize
+  checkForInactiveTabs();
 
+  // Handle global errors in service worker
+  if (typeof self !== 'undefined') {
+    self.addEventListener('error', (event) => {
+      console.error("Service Worker Error:", event.message);
+    });
     self.addEventListener('unhandledrejection', (event) => {
       console.error("Unhandled Rejection:", event.reason);
     });
   }
 
-  // Initial check for inactive tabs (only if not in test environment)
-  if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
-    checkForInactiveTabs();
-  }
+  // Update tab listeners to properly handle async operations
+  browserInstance.tabs.onCreated.addListener(async (tab) => {
+    tabActivity[tab.id] = Date.now();
+    console.log(`Tab created: ${tab.id}`);
+  });
 
-  // Export minimal interface to maintain encapsulation while supporting tests
+  // Return interface for testing
   return {
     checkForInactiveTabs,
     suspendTab,
     tabActivity,
+    archivedTabs,
+    actionHistory,
     getIsTaggingPromptActive: () => isTaggingPromptActive,
     setIsTaggingPromptActive: (value) => {
       isTaggingPromptActive = value;
     },
+    archiveTab,
+    undoLastAction,
+    tabs: browserInstance.tabs, // Expose tabs for testing
   };
 }
 
-// Support both direct usage and testing scenarios
-module.exports = initBackground;
-
-// Initialize background script regardless of environment
-initBackground();
-
-// Expose initBackground globally for test accessibility
-self.initBackground = initBackground;
-
-// Example of service worker registration (ensure the path is correct)
-self.addEventListener('install', event => {
-  console.log('Service Worker installing.');
-  // ...existing code...
-});
-
-self.addEventListener('activate', event => {
-  console.log('Service Worker activating.');
-  // ...existing code...
-});
+// Export for tests while still initializing in production
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = initBackground;
+} else {
+  initBackground();
+}

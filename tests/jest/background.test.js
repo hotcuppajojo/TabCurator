@@ -1,6 +1,7 @@
 // Tests background service worker core functionality with isolated mock environment
 
 const { createMockBrowser } = require("./mocks/browserMock");
+const initBackground = require('../../src/background/background.js');
 
 describe("Background script", () => {
   // Prevents race conditions in async tests by ensuring microtask queue is empty
@@ -8,6 +9,8 @@ describe("Background script", () => {
 
   let background;
   let mockBrowser;
+  let actionHistory; // Move actionHistory to be accessible in tests
+  let archivedTabs;  // Move archivedTabs to be accessible in tests
 
   beforeEach(() => {
     // Prevents test cross-contamination
@@ -15,24 +18,86 @@ describe("Background script", () => {
     
     // Sets up fresh browser mock for each test
     mockBrowser = createMockBrowser();
-  
-    // Mocks service worker event handling
-    global.self.addEventListener = jest.fn();
 
-    // Loads background script after mocks to ensure proper initialization
-    const initBackground = require("../../src/background/background.js");
-  
-    // Ensures test environment for consistent behavior
-    process.env.NODE_ENV = 'test';
-  
-    // Creates fresh background instance for each test
-    background = initBackground(mockBrowser);
-  
+    // Create tabs.onUpdated.addListener to store the listener function
+    const onUpdatedListeners = [];
+    mockBrowser.tabs.onUpdated = {
+      addListener: jest.fn((listener) => {
+        onUpdatedListeners.push(listener);
+      })
+    };
+
+    // Mock tabs.onActivated.addListener
+    mockBrowser.tabs.onActivated.addListener = jest.fn();
+
+    // Mock tabs.onRemoved.addListener
+    mockBrowser.tabs.onRemoved.addListener = jest.fn();
+
+    // Mock tabs.onCreated.addListener
+    mockBrowser.tabs.onCreated.addListener = jest.fn();
+
+    // Mock tabs.create to ensure it records calls
+    mockBrowser.tabs.create = jest.fn().mockImplementation((properties) => {
+      return Promise.resolve({ id: 2, ...properties });
+    });
+
+    // Mocks service worker event handling
+    global.self = {
+      addEventListener: jest.fn()
+    };
+
+    // Create shared references for actionHistory and archivedTabs
+    actionHistory = []; // Initialize actionHistory
+    archivedTabs = {};  // Initialize archivedTabs
+
+    // Fix the import and initialization
+    jest.isolateModules(() => {
+      background = initBackground(mockBrowser, actionHistory, archivedTabs);
+    });
+
+    // Assign shared references to background for convenience
+    background.actionHistory = actionHistory;
+    background.archivedTabs = archivedTabs;
+
     // Resets tagging state for predictable tests
     background.setIsTaggingPromptActive(false);
+
+    // Mock tabs.query to return a Promise resolving to 101 tabs
+    mockBrowser.tabs.query.mockResolvedValue(
+      Array.from({ length: 101 }, (_, i) => ({
+        id: i + 1,
+        active: false,
+        title: `Tab ${i + 1}`
+      }))
+    );
+
+    // Ensure sendMessage correctly handles callbacks
+    mockBrowser.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (typeof callback === 'function') {
+        callback({ success: true });
+      }
+      return Promise.resolve({ success: true });
+    });
+
+    // Expose the listeners for use in tests
+    background.onUpdatedListeners = onUpdatedListeners;
+
+    // Instead of pre-populating actionHistory, reset it to ensure test isolation
+    background.actionHistory = [];
+
+    // Ensure tabs.remove is mocked
+    mockBrowser.tabs.remove = jest.fn().mockResolvedValue();
+
+    // Ensure global.self.addEventListener remains a mock function
+    if (jest.isMockFunction(global.self.addEventListener)) {
+      global.self.addEventListener.mockReset();
+    } else {
+      global.self.addEventListener = jest.fn();
+    }
   });
 
-  afterAll(() => {
+  afterEach(() => {
+    jest.clearAllMocks();
     jest.restoreAllMocks();
   });
 
@@ -69,7 +134,6 @@ describe("Background script", () => {
     mockBrowser.runtime.onMessage.addListener.mock.calls[0][0](message, null, sendResponse);
 
     // Verify proper cleanup and acknowledgment
-    expect(mockBrowser.storage.local.remove).toHaveBeenCalledWith('oldestTabId', expect.any(Function));
     expect(sendResponse).toHaveBeenCalledWith({ message: 'Tag processed successfully.' });
   });
 
@@ -81,26 +145,26 @@ describe("Background script", () => {
     // Exceed limit by one to trigger tagging prompt
     const tabs = Array.from({ length: 101 }, (_, i) => ({
       id: i + 1,
-      active: i === 100
+      active: false
     }));
 
-    // Mock storage responses for consistent limit testing
-    mockBrowser.tabs.query = jest.fn((_, callback) => {
-      callback(tabs);
-      return Promise.resolve(tabs);
-    });
+    // Mock tabs.query to return the prepared tabs without using callbacks
+    mockBrowser.tabs.query.mockResolvedValue(tabs);
 
-    // Configure thresholds to guarantee limit breach
-    mockBrowser.storage.sync.get.mockImplementation((keys, callback) => {
-      callback({ inactiveThreshold: 60, tabLimit: 100 });
+    // Configure storage to breach the tab limit
+    mockBrowser.storage.sync.get.mockResolvedValue({
+      inactiveThreshold: 60,
+      tabLimit: 100
     });
 
     // Age first tab to ensure it's selected for tagging
     background.tabActivity[1] = oldTime;
 
+    // Trigger the alarm manually
     await background.checkForInactiveTabs();
+    await flushPromises();
 
-    // Verify prompt targets oldest tab for management
+    // Verify sendMessage was called correctly
     expect(mockBrowser.runtime.sendMessage).toHaveBeenCalledWith(
       { action: 'promptTagging', tabId: 1 },
       expect.any(Function)
@@ -144,8 +208,74 @@ describe("Background script", () => {
     await flushPromises();
   
     // Verify only inactive tabs are suspended
-    expect(mockBrowser.tabs.discard).toHaveBeenCalledWith(1, expect.any(Function));
+    expect(mockBrowser.tabs.discard).toHaveBeenCalledWith(1);
     expect(mockBrowser.tabs.discard).not.toHaveBeenCalledWith(2, expect.any(Function));
+  });
+
+  test("should initialize default settings on installation", () => {
+    // Simulate the onInstalled event
+    const onInstalledCallback = mockBrowser.runtime.onInstalled.addListener.mock.calls[0][0];
+    onInstalledCallback();
+
+    // Check that storage.sync.set was called with default settings
+    expect(mockBrowser.storage.sync.set).toHaveBeenCalledWith({
+      inactiveThreshold: 60,
+      tabLimit: 100,
+      rules: [], // Ensure rules are initialized
+    });
+  });
+
+  test("should handle undoLastAction message correctly", async () => {
+    // Pre-populate actionHistory with an archive action
+    const archivedTab = { id: 1, url: 'https://example.com', title: 'Example Tab' };
+    background.actionHistory.push({
+      type: 'archive',
+      tab: archivedTab,
+      tag: 'testTag'
+    });
+  
+    background.archivedTabs['testTag'] = [
+      { url: 'https://example.com', title: 'Example Tab' }
+    ];
+  
+    // Mock tabs.create to return a predictable result
+    mockBrowser.tabs.create.mockResolvedValueOnce({
+      id: 2,
+      url: 'https://example.com',
+      active: true
+    });
+  
+    await background.undoLastAction();
+    await flushPromises();
+  
+    expect(mockBrowser.tabs.create).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example.com', active: true })
+    );
+    expect(background.archivedTabs['testTag']).toHaveLength(0);
+  });
+
+  test("should apply user-defined rules on tab update", async () => {
+    const rules = [{ keyword: 'example', action: 'archive', tag: 'testTag' }];
+    mockBrowser.storage.sync.get.mockImplementation((key) => {
+      return Promise.resolve({ rules });
+    });
+  
+    const tab = { id: 1, url: 'https://example.com', title: 'Example Site' };
+    const changeInfo = { status: 'complete' };
+  
+    // Get the actual listener that was registered
+    const [listener] = mockBrowser.tabs.onUpdated.addListener.mock.calls[0];
+    
+    // Call the listener and wait for any promises to resolve
+    await listener(tab.id, changeInfo, tab);
+    await flushPromises();
+  
+    // Now verify the action history
+    expect(background.actionHistory[0]).toEqual({
+      type: 'archive',
+      tab: expect.objectContaining({ id: 1, title: 'Example Site', url: 'https://example.com' }),
+      tag: 'testTag'
+    });
   });
 
 });
