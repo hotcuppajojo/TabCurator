@@ -1,0 +1,20 @@
+/* src/popup/popup.css */
+
+/* Responsive design */
+.popup-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Adjust layout for smaller screens */
+@media (max-width: 600px) {
+  .popup-container h1 {
+    font-size: 1.5em;
+  }
+
+  .popup-container button {
+    width: 100%;
+    margin-bottom: 10px;
+  }
+}

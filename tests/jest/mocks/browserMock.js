@@ -6,138 +6,109 @@
  * @returns {jest.Mock} Enhanced mock function with listener capabilities
  */
 const createMockListener = () => {
-  const fn = jest.fn();
-  fn.addListener = jest.fn();
-  fn.removeListener = jest.fn();
-  fn.hasListener = jest.fn(() => false);
-  return fn;
+  const listeners = [];
+  const mock = {
+    addListener: jest.fn(listener => listeners.push(listener)),
+    removeListener: jest.fn(listener => {
+      const index = listeners.indexOf(listener);
+      if (index > -1) listeners.splice(index, 1);
+    }),
+    hasListener: jest.fn((listener) => listeners.includes(listener)),
+    callListeners: (...args) => listeners.forEach(listener => listener(...args)),
+  };
+  return mock;
 };
 
 /**
  * Creates a comprehensive mock of Chrome browser extension APIs
- * Simulates core browser functionalities for testing extension behaviors
+ * Includes mocking for webextension-polyfill
  * @returns {Object} Mock browser object with runtime, storage, tabs and alarms APIs
  */
 const createMockBrowser = () => {
-  // Create instance first to allow self-referencing
-  const instance = {
+  const mockBrowser = {
     runtime: {
-      // Mock async messaging system with guaranteed success response
-      // Supports both callback and Promise-based implementations
-      sendMessage: jest.fn().mockImplementation((message, callback) => {
-        if (callback) {
-          callback({ success: true });
-        }
-        return Promise.resolve({ success: true });
-      }),
-      // Extension event listeners for background script communication
-      onMessage: {
-        addListener: jest.fn(),
-      },
-      // Lifecycle event handlers for extension state management
+      onMessage: createMockListener(),
       onInstalled: createMockListener(),
-      // Error handling simulation support
-      lastError: null, // Ensure lastError can be set in tests
+      sendMessage: jest.fn(),
+      lastError: null,
+    },
+    tabs: {
+      onActivated: createMockListener(),
+      onCreated: createMockListener(),
+      onRemoved: createMockListener(),
+      onUpdated: createMockListener(),
+      query: jest.fn(),
+      get: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      remove: jest.fn(),
+      discard: jest.fn().mockImplementation((tabId) => {
+        if (!tabId || typeof tabId !== 'number') {
+          return Promise.reject(new Error('Invalid tab ID'));
+        }
+        return Promise.resolve({ 
+          id: tabId, 
+          discarded: true,
+          title: `Tab ${tabId}`,
+          url: 'https://example.com',
+          windowId: 1,
+          active: false,
+          status: 'complete'
+        });
+      }),
     },
     storage: {
       sync: {
-        // Implements flexible storage.sync.get with support for string, array and object keys
-        // Returns predefined test data matching production schema
-        get: jest.fn().mockImplementation((key) => {
+        get: jest.fn((keys) => {
           const defaultData = {
             inactiveThreshold: 60,
             tabLimit: 100,
             rules: [{ condition: 'example.com', action: 'Tag: Research' }],
             savedSessions: {}
           };
-          return Promise.resolve({ [key]: defaultData[key] });
+          if (typeof keys === 'string') {
+            return Promise.resolve({ [keys]: defaultData[keys] });
+          } else if (Array.isArray(keys)) {
+            const result = {};
+            keys.forEach(key => {
+              result[key] = defaultData[key];
+            });
+            return Promise.resolve(result);
+          } else {
+            return Promise.resolve(defaultData);
+          }
         }),
-        // Simulates successful storage updates with callback support
-        set: jest.fn().mockImplementation((items) => {
-          // Optionally update internal state if needed
-          return Promise.resolve();
-        }),
+        set: jest.fn((items) => Promise.resolve()),
+        remove: jest.fn((keys) => Promise.resolve()),
       },
       local: {
-        // Provides deterministic local storage state for tab management testing
-        get: jest.fn((key, callback) => {
-          callback({ oldestTabId: 1 });
-          return Promise.resolve({ oldestTabId: 1 });
-        }),
-        // Simulates successful local storage updates
-        set: jest.fn((data, callback) => {
-          if (callback) callback();
-          return Promise.resolve();
-        }),
-        // Supports cleanup operations in tests
-        remove: jest.fn().mockImplementation((key) => {
-          return Promise.resolve();
-        }),
+        get: jest.fn(),
+        set: jest.fn(),
+        remove: jest.fn(),
       },
-      // Storage change notification system mock
-      onChanged: {
-        addListener: jest.fn(),
-      },
+      onChanged: createMockListener(),
     },
-    tabs: {
-      // Simulates tab queries with consistent test data set
-      // Returns fixed array of tabs for predictable test scenarios
-      query: jest.fn().mockImplementation((queryInfo) => {
-        const tabs = [
-          { id: 1, active: false, title: 'Tab 1', url: 'https://example1.com' },
-          { id: 2, active: false, title: 'Tab 2', url: 'https://example2.com' },
-          { id: 3, active: true, title: 'Tab 3', url: 'https://example3.com' }
-        ];
-        return Promise.resolve(tabs);
-      }),
-      // Simulates tab creation with unique ID generation
-      create: jest.fn().mockImplementation((createProperties) => {
-        const tab = { id: Date.now(), ...createProperties };
-        return Promise.resolve(tab);
-      }),
-      // Tab information retrieval simulation
-      get: jest.fn().mockImplementation((tabId) => {
-        const tab = { id: tabId, title: `Tab ${tabId}`, url: `https://example.com/page` };
-        return Promise.resolve(tab);
-      }),
-      // Tab state modification operations
-      update: jest.fn().mockImplementation((tabId, updateInfo, callback) => {
-        // Simulate successful update
-        if (callback) callback();
-        return Promise.resolve();
-      }),
-      // Memory management operation simulation
-      discard: jest.fn().mockImplementation((tabId) => {
-        return Promise.resolve();
-      }),
-      // Tab removal simulation for archive testing
-      remove: jest.fn().mockImplementation((tabId, callback) => {
-        if (callback) callback();
-        return Promise.resolve();
-      }),
-      // Tab lifecycle event handlers
-      onCreated: {
-        addListener: jest.fn()
-      },
-      onUpdated: {
-        addListener: jest.fn()
-      },
-      onActivated: {
-        addListener: jest.fn()
-      },
-      onRemoved: {
-        addListener: jest.fn()
-      }
-    },
-    // Maintenance scheduling simulation support
     alarms: {
-      // Enables testing of timed operations
       create: jest.fn(),
       onAlarm: createMockListener(),
-    }
+    },
+    declarativeNetRequest: {
+      updateDynamicRules: jest.fn(),
+    },
+    // ...other necessary browser API mocks...
   };
 
-  return instance;
+  return mockBrowser;
 };
 
-module.exports = { createMockBrowser };
+// Export createMockListener as a named export
+const browserMock = {
+  createMockBrowser,
+  createMockListener
+};
+
+// Export createMockBrowser as a named export
+export { createMockBrowser };
+
+// Use default export as the browser mock
+export default createMockBrowser();

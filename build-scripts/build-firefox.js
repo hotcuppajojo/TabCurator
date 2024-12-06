@@ -39,12 +39,37 @@ function packageExtension() {
   console.log('Firefox extension packaged successfully.');
 }
 
+// Modify manifest for Firefox
+function modifyManifest() {
+  const manifestPath = path.join(__dirname, '..', 'manifest.json');
+  const manifest = require(manifestPath);
+
+  manifest.manifest_version = 2;
+  manifest.browser_specific_settings = {
+    gecko: {
+      id: "{your-extension-id}@example.com",
+      strict_min_version: "68.0"
+    }
+  };
+
+  delete manifest.background.service_worker;
+  manifest.background = {
+    scripts: ["src/background/background.js"]
+  };
+
+  fs.writeFileSync(
+    path.join(__dirname, '..', 'dist', 'firefox', 'manifest.json'),
+    JSON.stringify(manifest, null, 2)
+  );
+}
+
 // Run the build steps
 function buildFirefox() {
   cleanBuild();
   copySource();
   copyFirefoxFiles();
   optimizeAssets();
+  modifyManifest();
   packageExtension();
   console.log('Firefox build completed successfully.');
 }

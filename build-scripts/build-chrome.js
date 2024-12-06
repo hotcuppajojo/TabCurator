@@ -23,6 +23,7 @@ function cleanBuild() {
 function copySource() {
   console.log('Copying source files...');
   fs.copySync(SRC_DIR, path.join(BUILD_DIR, 'src'));
+  // Ensure ES6 modules are handled correctly in the build process
 }
 
 // Separate browser-specific files to support multi-browser architecture
@@ -30,6 +31,19 @@ function copyChromeFiles() {
   console.log('Copying Chrome-specific files...');
   fs.copySync(path.join(CHROME_DIR, 'manifest.json'), path.join(BUILD_DIR, 'manifest.json'));
   fs.copySync(path.join(CHROME_DIR, 'icons'), path.join(BUILD_DIR, 'icons'));
+}
+
+// Copy vendor files to support additional functionalities
+function copyVendorFiles() {
+  console.log('Copying vendor files...');
+  const vendorDir = path.join(BUILD_DIR, 'vendor');
+  fs.ensureDirSync(vendorDir);
+
+  // Corrected path to the polyfill
+  fs.copySync(
+    path.join(__dirname, '../node_modules/webextension-polyfill/dist/browser-polyfill.js'),
+    path.join(vendorDir, 'browser-polyfill.js')
+  );
 }
 
 // Minify assets to reduce extension size and improve load times
@@ -60,7 +74,12 @@ function buildChrome() {
   cleanBuild();
   copySource();
   copyChromeFiles();
+  copyVendorFiles();
   optimizeAssets();
+
+  // Run Webpack with Chrome target
+  execSync('webpack --env target=chrome --config webpack.config.js', { stdio: 'inherit' });
+
   packageExtension();
   console.log('Chrome build completed successfully.');
 }

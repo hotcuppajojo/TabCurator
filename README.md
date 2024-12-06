@@ -36,6 +36,7 @@ TabCurator/
 ├── tests/                  # Test files
 │   ├── playwright/         # Playwright integration tests
 │   └── jest/               # Jest unit tests
+├── vendor/                 # Vendor files
 ├── .github/workflows/      # CI/CD workflow files for automated builds and deployments
 ├── test-results/           # Test result artifacts
 ├── LICENSE                 # License file

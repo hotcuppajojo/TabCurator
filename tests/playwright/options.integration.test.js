@@ -18,7 +18,7 @@ test.describe('Options page integration tests', () => {
       // Create a new page
       page = await browserContext.newPage();
 
-      // **Inject the browser mock before navigating to the options page**
+      // Inject the browser mock before navigating to the options page
       await injectBrowserMock(page);
 
       // Navigate to the options page after mock injection
@@ -55,14 +55,14 @@ test.describe('Options page integration tests', () => {
 
   test('should save new options correctly', async () => {
     // Fill in new values
-    await page.fill('#inactiveThreshold', '45', { timeout: 5000 });
-    await page.fill('#tabLimit', '80', { timeout: 5000 });
+    await page.fill('#inactiveThreshold', '45', { timeout: 3000 }); // Reduced from 5000ms to 3000ms
+    await page.fill('#tabLimit', '80', { timeout: 3000 }); // Reduced from 5000ms to 3000ms
 
     // Click save button
     await page.click('#save-options', { timeout: 5000 });
 
     // Wait for a short duration to ensure the mock has processed the call
-    await page.waitForTimeout(500); // 500ms delay
+    await page.waitForTimeout(300); // Reduced from 500ms to 300ms
 
     // Verify the storage.sync.set call using our debug helper
     const calls = await page.evaluate(() => {
@@ -74,10 +74,10 @@ test.describe('Options page integration tests', () => {
     expect(calls[0][0]).toEqual({ inactiveThreshold: 45, tabLimit: 80 });
 
     // Wait for the success message to become visible
-    await expect(page.locator('#save-success')).toHaveClass(/visible/, { timeout: 5000 });
+    await expect(page.locator('#save-success')).toHaveClass(/visible/, { timeout: 3000 }); // Reduced from 5000ms to 3000ms
 
     // Optionally, verify that the class has been removed after the timeout
-    await page.waitForTimeout(2500); // Assuming the timeout in saveOptions is 2000ms
+    await page.waitForTimeout(1500); // Reduced from 2500ms to 1500ms
     await expect(page.locator('#save-success')).not.toHaveClass(/visible/);
 
     // Verify the input values were updated

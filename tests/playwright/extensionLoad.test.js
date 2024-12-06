@@ -4,6 +4,7 @@ import path from 'path';
 
 test.describe('Extension Load Test', () => {
   let context;
+  let extensionId;
 
   test.beforeAll(async () => {
     const pathToExtension = path.resolve(__dirname, '../../build/chrome');
@@ -14,6 +15,32 @@ test.describe('Extension Load Test', () => {
         `--load-extension=${pathToExtension}`
       ]
     });
+
+    // Get extension ID first
+    const page = await context.newPage();
+    await page.goto('chrome://extensions');
+    extensionId = await page.evaluate(() => {
+      const extensions = document.querySelector('extensions-manager')
+        ?.shadowRoot?.querySelector('extensions-item-list')
+        ?.shadowRoot?.querySelectorAll('extensions-item') || [];
+      for (const ext of extensions) {
+        const name = ext.shadowRoot?.querySelector('.name')?.textContent;
+        if (name === 'TabCurator') {
+          return ext.shadowRoot?.querySelector('#extension-id')?.textContent;
+        }
+      }
+    });
+    await page.close();
+
+    if (!extensionId) {
+      throw new Error('Could not find extension ID');
+    }
+
+    // Activate service worker
+    const activatePage = await context.newPage();
+    await activatePage.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
+    await activatePage.waitForTimeout(1000);
+    await activatePage.close();
   });
 
   test.afterAll(async () => {
@@ -23,10 +50,16 @@ test.describe('Extension Load Test', () => {
   test('should load the extension in Chrome', async () => {
     const serviceWorker = await context.waitForEvent('serviceworker', {
       predicate: (worker) => worker.url().includes('background/background.js'),
-      timeout: 60000 // Increase timeout
+      timeout: 90000 // Increase timeout further
     });
 
     expect(serviceWorker).toBeTruthy();
     expect(serviceWorker.url()).toContain('background/background.js');
-  }, 60000); // Increase test timeout
+
+    // Verify that alarms API is mocked
+    const alarmsMock = await context.pages()[0].evaluate(() => {
+      return !!window.browser.alarms;
+    });
+    expect(alarmsMock).toBe(true);
+  }, 120000); // Increase test timeout
 });

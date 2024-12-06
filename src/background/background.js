@@ -1,224 +1,125 @@
 // src/background/background.js
+/**
+ * @fileoverview Background service worker module for TabCurator extension.
+ * Manages tab lifecycle, rule processing, session handling, and automated maintenance tasks.
+ * Ensures compatibility with both Chrome and Firefox using the WebExtension API.
+ */
+import browser from 'webextension-polyfill'; // Import the browser API polyfill
+import { queryTabs, getTab } from '../utils/tabUtils.js'; // Import tab management utilities
+import { archiveTab } from '../utils/tagUtils.js'; // Import tab tagging utilities
+import { suspendTab } from '../utils/suspensionUtils.js'; // Import tab suspension utilities
+import { store } from '../utils/stateManager.js'; // Import the Redux store
 
 /**
- * @fileoverview Background service worker module for TabCurator extension
- * Implements tab management, rule processing, and session handling functionality
- * Provides browser-agnostic implementation for Chrome/Firefox compatibility
- * Manages tab lifecycle, archival, and automated maintenance tasks
+ * Background service worker module for TabCurator extension.
+ * @module background
+ * @exports background
+ * @description Manages tab lifecycle, rule processing, session handling, and automated maintenance tasks.
  */
-
 const background = {
-  // Maintains reversible action stack for undo operations
-  actionHistory: [],
-  // Groups tabs by user-defined tags for organized storage
-  archivedTabs: {},
-  // Tracks tab interaction timestamps for inactivity detection
-  tabActivity: {},
-  // Preserves window states for later restoration
-  savedSessions: {},
-  isTaggingPromptActive: false,
-
   /**
-   * Checks if tagging prompt is currently active to prevent overlapping requests
-   * @returns {boolean} Current state of tagging prompt
-   */
-  getIsTaggingPromptActive() {
-    return this.isTaggingPromptActive; // check if tagging prompt is active
-  },
-
-  /**
-   * Updates tagging prompt state for coordination between UI and background tasks
-   * @param {boolean} value - New state for tagging prompt
-   */
-  setIsTaggingPromptActive(value) {
-    this.isTaggingPromptActive = value; // update tagging prompt state
-  },
-
-  /**
-   * Processes tab against defined ruleset for automated organization
-   * Implements single-pass rule matching for performance
-   * @param {browser.tabs.Tab} tab - Tab object to evaluate
-   * @param {object} browserInstance - Browser API instance
+   * Applies rules to a tab for automated organization.
+   * Matches tabs based on URL/title against the ruleset and performs actions like archiving.
+   *
+   * @param {browser.tabs.Tab} tab - Tab object to evaluate.
+   * @param {object} browserInstance - Browser API instance.
+   * @returns {Promise<void>}
    */
   async applyRulesToTab(tab, browserInstance) {
-    // Validate API access before proceeding
     if (!browserInstance?.storage) {
-      console.error("Invalid browser instance provided to applyRulesToTab");
+      console.error("Invalid browser instance provided to applyRulesToTab.");
       return;
     }
-
     try {
-      // Batch fetch rules for efficient processing
-      const data = await browserInstance.storage.sync.get("rules"); // retrieve stored rules
+      const data = await browserInstance.storage.sync.get("rules");
       const rules = data.rules || [];
-      
-      // Single-pass rule evaluation for performance
       for (const rule of rules) {
-        // Flexible matching against both URL and title patterns
         if (tab.url.includes(rule.condition) || tab.title.includes(rule.condition)) {
           const [actionType, tag] = rule.action.split(": ");
-          // Support for future action type expansion
           if (actionType === 'Tag') {
-            await this.archiveTab(tab.id, tag, browserInstance); // archive tab based on rule
-            break; // Exit after first match for predictable behavior
+            const tabData = { title: tab.title, url: tab.url };
+            await archiveTab(tab.id, tag, store.getState().archivedTabs);
+            store.dispatch({ type: 'ARCHIVE_TAB', tag, tabData });
+            await browserInstance.tabs.remove(tab.id); // Encapsulated tab removal
+            console.log(`Rule applied: Archived tab '${tab.title}' under tag '${tag}'.`);
+            break;
           }
         }
       }
     } catch (error) {
-      console.error("Error applying rules to tab:", error); // handle retrieval errors
+      console.error(`Error applying rules to tab (ID: ${tab.id}):`, error);
     }
   },
 
   /**
-   * Persists current window tabs as named session
-   * Implements storage sync for cross-device availability
-   * @param {string} sessionName - Unique identifier for the session
-   * @param {object} browserInstance - Browser API instance
-   * @returns {Array} Saved tab metadata
+   * Saves the current window's tabs as a named session.
+   *
+   * @param {string} sessionName - Unique identifier for the session.
+   * @param {object} browserInstance - Browser API instance.
+   * @returns {Promise<Array>} Array of saved tab metadata.
    */
   async saveSession(sessionName, browserInstance) {
     try {
-      const tabs = await browserInstance.tabs.query({ currentWindow: true }); // get current window tabs
+      const tabs = await browserInstance.tabs.query({ currentWindow: true });
       const sessionTabs = tabs.map(({ title, url }) => ({ title, url }));
-      this.savedSessions[sessionName] = sessionTabs; // store session data
-      await browserInstance.storage.sync.set({ savedSessions: this.savedSessions }); // save to storage
+      store.dispatch({ type: 'SAVE_SESSION', sessionName, sessionTabs });
+      await browserInstance.storage.sync.set({ savedSessions: store.getState().savedSessions });
+      console.log(`Session '${sessionName}' saved with ${sessionTabs.length} tabs.`);
       return sessionTabs;
     } catch (error) {
-      console.error("Error saving session:", error);
+      console.error(`Error saving session '${sessionName}':`, error);
       throw error;
     }
   },
 
   /**
-   * Recreates saved window state from session data
-   * Implements user feedback for success/failure
-   * @param {string} sessionName - Session identifier to restore
-   * @param {object} browserInstance - Browser API instance
+   * Restores a saved session.
+   *
+   * @param {string} sessionName - Session identifier to restore.
+   * @param {object} browserInstance - Browser API instance.
+   * @returns {Promise<void>}
    */
   async restoreSession(sessionName, browserInstance) {
-    const sessionTabs = this.savedSessions[sessionName];
+    const sessionTabs = store.getState().savedSessions[sessionName];
     if (sessionTabs) {
-      // Recreate each tab from session data
       for (const tab of sessionTabs) {
         await browserInstance.tabs.create({ url: tab.url });
       }
-      alert(`Session "${sessionName}" restored successfully!`);
+      console.log(`Session '${sessionName}' restored successfully.`);
     } else {
-      alert(`Session "${sessionName}" not found.`); // handle missing session
+      console.warn(`Session '${sessionName}' not found.`);
     }
   },
 
   /**
-   * Archives specified tab with associated metadata
-   * Implements undo support via action history
-   * @param {number} tabId - ID of tab to archive
-   * @param {string} tag - Organizational tag for grouping
-   * @param {object} browserInstance - Browser API instance
-   */
-  async archiveTab(tabId, tag, browserInstance) {
-    try {
-      const tab = await browserInstance.tabs.get(tabId); // fetch tab details
-      // Initialize tag group if needed
-      this.archivedTabs[tag] = this.archivedTabs[tag] || [];
-      // Store tab metadata for potential restoration
-      this.archivedTabs[tag].push({
-        title: tab.title,
-        url: tab.url
-      }); // add tab to archive under specified tag
-      // Track action for undo support
-      this.actionHistory.push({ type: 'archive', tab, tag }); // log archival action
-      await browserInstance.tabs.remove(tabId); // close the archived tab
-    } catch (error) {
-      console.error(`Failed to archive tab ${tabId}:`, error); // handle archival errors
-    }
-  },
-
-  /**
-   * Suspends tab to reduce memory usage
-   * Implements fallback for unsupported browsers
-   * @param {number} tabId - ID of tab to suspend
-   * @param {object} browserInstance - Browser API instance
-   */
-  async suspendTab(tabId, browserInstance) {
-    if (browserInstance.tabs.discard) {
-      await browserInstance.tabs.discard(tabId);
-      console.log(`Tab suspended: ${tabId}`);
-    } else {
-      console.warn("Tab discard API not supported.");
-    }
-  },
-
-  /**
-   * Reverts most recent tab archival action
-   * Implements cleanup of archived tabs storage
-   * @param {object} browserInstance - Browser API instance
-   * @returns {object|null} Newly created tab or null if no action to undo
-   */
-  async undoLastAction(browserInstance) {
-    const lastAction = this.actionHistory.pop();
-    if (lastAction && lastAction.type === 'archive') {
-      // Restore tab to previous state
-      const newTab = await browserInstance.tabs.create({ 
-        url: lastAction.tab.url,
-        active: true
-      });
-      
-      // Remove from archived storage
-      if (this.archivedTabs[lastAction.tag]) {
-        this.archivedTabs[lastAction.tag] = this.archivedTabs[lastAction.tag]
-          .filter(t => t.url !== lastAction.tab.url);
-      }
-      
-      return newTab;
-    }
-    return null;
-  },
-
-  /**
-   * Monitors tab count and activity for automated management
-   * Implements adaptive threshold-based suspension
-   * @param {object} browserInstance - Browser API instance
-   * @param {number} tabLimit - Maximum allowed tabs before intervention
+   * Monitors and manages inactive tabs.
+   * Suspends or prompts tagging based on inactivity thresholds.
+   *
+   * @param {object} browserInstance - Browser API instance.
+   * @param {number} tabLimit - Maximum allowed tabs before intervention.
+   * @returns {Promise<void>}
    */
   async checkForInactiveTabs(browserInstance, tabLimit = 100) {
-    // Validate API access before proceeding
-    if (!browserInstance?.tabs) {
-      console.error("Invalid browser instance provided to checkForInactiveTabs");
-      return;
-    }
-  
     try {
       const now = Date.now();
-      
-      const tabs = await browserInstance.tabs.query({});
-      // Implement tab limit enforcement
-      if (tabs.length > tabLimit && !this.isTaggingPromptActive) {
+      const tabs = await queryTabs({});
+      if (tabs.length > tabLimit) {
         const inactiveTabs = tabs.filter(tab => !tab.active);
         if (inactiveTabs.length > 0) {
-          // Select oldest inactive tab using timestamp comparison
           const oldestTab = inactiveTabs.reduce((oldest, current) => {
-            const oldestTime = this.tabActivity[oldest.id] || now;
-            const currentTime = this.tabActivity[current.id] || now;
+            const oldestTime = store.getState().tabActivity[oldest.id] || now;
+            const currentTime = store.getState().tabActivity[current.id] || now;
             return currentTime < oldestTime ? current : oldest;
           });
-  
-          // Delegate to UI for user intervention
-          browserInstance.runtime.sendMessage(
-            { action: 'promptTagging', tabId: oldestTab.id },
-            () => {
-              this.isTaggingPromptActive = true;
-              console.log(`Prompting user to tag tab: ${oldestTab.id}`);
-            }
-          );
+          browserInstance.runtime.sendMessage({ action: 'promptTagging', tabId: oldestTab.id });
+          console.log(`Prompting tagging for oldest inactive tab: ${oldestTab.title}`);
         }
       }
-  
-      // Implement automatic tab suspension for memory management
       for (const tab of tabs) {
-        const lastActive = this.tabActivity[tab.id] || now;
-        // Use 1-hour threshold for inactivity determination
+        const lastActive = store.getState().tabActivity[tab.id] || now;
         if (!tab.active && now - lastActive > 60 * 60 * 1000) {
-          await this.suspendTab(tab.id, browserInstance);
+          await suspendTab(tab.id);
+          console.log(`Tab suspended: ${tab.title}`);
         }
       }
     } catch (error) {
@@ -227,139 +128,143 @@ const background = {
   },
 
   /**
-   * Initializes background service worker and sets up event handlers
-   * Implements cross-browser compatibility layer
-   * @param {object} browserInstance - Browser API instance
+   * Initializes the background service worker.
+   * Sets up event handlers, message listeners, and persistent storage defaults.
+   *
+   * @param {object} browserInstance - Browser API instance.
    */
-  initBackground(browserInstance = (typeof browser !== 'undefined' ? browser : chrome)) {
-    // Validate browser API availability
+  async initBackground(browserInstance = browser) {
     if (!browserInstance?.tabs) {
-      console.error("Invalid browser instance provided to initBackground");
+      console.error("Invalid browser instance provided to initBackground.");
       return;
     }
 
-    console.log("Background service worker started."); // indicate service worker initiation
+    console.log("Background service worker started.");
 
-    // Configure persistent storage defaults
-    browserInstance.runtime.onInstalled.addListener(() => {
-      browserInstance.storage.sync.set({
-        inactiveThreshold: 60,
-        tabLimit: 100,
-        rules: []
-      }); // set default storage values on installation
+    // Set default storage values on extension installation
+    browserInstance.runtime.onInstalled.addListener(async () => {
+      try {
+        await browserInstance.storage.sync.set({
+          inactiveThreshold: 60,
+          tabLimit: 100,
+          rules: [],
+        });
+        console.log("Default settings initialized.");
+      } catch (error) {
+        console.error("Error initializing default settings:", error);
+      }
+
+      // Register declarativeNetRequest rules
+      try {
+        await browserInstance.declarativeNetRequest.updateDynamicRules({
+          addRules: [],
+          removeRuleIds: []
+        });
+        console.log("Declarative Net Request rules registered.");
+      } catch (error) {
+        console.error("Error registering declarativeNetRequest rules:", error);
+      }
     });
 
-    // Implement error boundary for service worker context
-    if (typeof self !== 'undefined') {
-      self.addEventListener('error', (event) => {
-        console.error("Service Worker Error:", event.message); // capture service worker errors
-      });
-      self.addEventListener('unhandledrejection', (event) => {
-        console.error("Unhandled Rejection:", event.reason); // capture promise rejections
-      });
-    }
-
-    // Initialize clean state for new session
-    this.actionHistory.length = 0; // reset action history
-    Object.keys(this.archivedTabs).forEach(key => delete this.archivedTabs[key]); // clear archived tabs
-
-    // Configure message handling for extension components
-    browserInstance.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    browserInstance.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+      console.log("Message received from:", sender.url || "Unknown sender");
       try {
         switch (message.action) {
-          case 'tagAdded':
-            this.isTaggingPromptActive = false; // reset tagging prompt state
-            browserInstance.storage.local.remove('oldestTabId'); // clean up storage
-            sendResponse({ message: 'Tag processed successfully.' }); // acknowledge
-            break;
-          case 'saveSession':
-            this.saveSession(message.sessionName, browserInstance); // handle session saving
+          case "saveSession":
+            await saveSessionHandler(message.sessionName, browserInstance);
             sendResponse({ success: true });
             break;
-          case 'getSessions':
-            sendResponse({ sessions: this.savedSessions });
+
+          case "restoreSession":
+            await restoreSessionHandler(message.sessionName, browserInstance);
+            sendResponse({ success: true });
             break;
-          case 'restoreSession':
-            (async () => {
-              await this.restoreSession(message.sessionName, browserInstance);
-              sendResponse({ success: true });
-            })();
-            return true;
-          case 'undoLastAction':
-            (async () => {
-              const result = await this.undoLastAction(browserInstance);
-              sendResponse({ success: true, result });
-            })();
-            return true;
+
+          case "DISPATCH_ACTION":
+            store.dispatch(message.payload);
+            sendResponse({ success: true });
+            break;
+
+          case "GET_STATE":
+            sendResponse({ state: store.getState() });
+            break;
+
           default:
-            sendResponse({ error: 'Unknown action' }); // handle unknown actions
+            console.warn("Unknown action:", message.action);
+            sendResponse({ error: "Unknown action" });
         }
       } catch (error) {
-        console.error('Error handling message:', error);
-        sendResponse({ error: error.message }); // respond with error details
+        console.error("Error handling message:", error);
+        sendResponse({ error: error.message });
       }
+      return true;
     });
 
-    // Configure tab lifecycle hooks
-    browserInstance.tabs.onActivated.addListener((activeInfo) => {
-      this.tabActivity[activeInfo.tabId] = Date.now(); // update activity timestamp
-      console.log(`Tab activated: ${activeInfo.tabId}`); // log activation
+    browserInstance.tabs.onActivated.addListener(({ tabId }) => {
+      store.dispatch({ type: "UPDATE_TAB_ACTIVITY", tabId, timestamp: Date.now() });
+      console.log(`Tab activated: ${tabId}`);
     });
 
-    browserInstance.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-      if (changeInfo.status === 'complete') {
-        await this.applyRulesToTab(tab, browserInstance);
-      }
-    });
-
-    browserInstance.tabs.onRemoved.addListener((tabId) => {
-      delete this.tabActivity[tabId];
-      console.log(`Tab removed: ${tabId}`);
-    });
-
-    browserInstance.tabs.onCreated.addListener(async (tab) => {
-      this.tabActivity[tab.id] = Date.now();
-      console.log(`Tab created: ${tab.id}`);
-      await this.applyRulesToTab(tab, browserInstance);
-    });
-
-    // Schedule periodic maintenance tasks
-    browserInstance.alarms.create("checkForInactiveTabs", { periodInMinutes: 5 }); // schedule inactivity checks
-    browserInstance.alarms.onAlarm.addListener((alarm) => {
+    browserInstance.alarms.create("checkForInactiveTabs", { periodInMinutes: 5 });
+    browserInstance.alarms.onAlarm.addListener(async (alarm) => {
       if (alarm.name === "checkForInactiveTabs") {
-        const instance = browserInstance;
-        this.checkForInactiveTabs(instance); // execute inactivity check
+        try {
+          await this.checkForInactiveTabs(browserInstance);
+        } catch (error) {
+          console.error("Error checking for inactive tabs:", error);
+        }
       }
     });
 
-    // Initialize persistent state and perform initial checks
-    this.initSessions(browserInstance); // initialize session data
-    this.checkForInactiveTabs(browserInstance); // perform initial inactivity check
-  },
-
-  /**
-   * Initializes session management and storage sync
-   * Implements change listener for cross-window updates
-   * @param {object} browserInstance - Browser API instance
-   */
-  async initSessions(browserInstance) {
-    if (!browserInstance) return;
-    
     try {
-      // Load existing sessions from storage
-      const data = await browserInstance.storage.sync.get("savedSessions");
-      this.savedSessions = data.savedSessions || {};
-      
-      // Monitor for session changes from other windows
-      browserInstance.storage.onChanged.addListener((changes, area) => {
-        if (area === "sync" && changes.savedSessions) {
-          this.savedSessions = changes.savedSessions.newValue;
-        }
-      });
+      await this.checkForInactiveTabs(browserInstance);
     } catch (error) {
-      console.error("Error initializing sessions:", error);
+      console.error("Initial inactive tab check failed:", error);
     }
-  }
+  },
 };
 
-module.exports = background;
+/**
+ * Saves the current session and handles errors.
+ * @param {string} sessionName - Name of the session.
+ * @param {object} browserInstance - Browser API instance.
+ */
+async function saveSessionHandler(sessionName = "Untitled Session", browserInstance) {
+  try {
+    await background.saveSession(sessionName, browserInstance);
+    console.log(`Session '${sessionName}' saved.`);
+  } catch (error) {
+    console.error(`Error saving session '${sessionName}':`, error);
+    throw error;
+  }
+}
+
+/**
+ * Restores a saved session and handles errors.
+ * @param {string} sessionName - Name of the session to restore.
+ * @param {object} browserInstance - Browser API instance.
+ */
+async function restoreSessionHandler(sessionName, browserInstance) {
+  try {
+    await background.restoreSession(sessionName, browserInstance);
+    console.log(`Session '${sessionName}' restored.`);
+  } catch (error) {
+    console.error(`Error restoring session '${sessionName}':`, error);
+    throw error;
+  }
+}
+
+// Support both testing and service worker environments
+if (typeof module !== 'undefined' && module.exports) {
+  /**
+   * Export the background module for testing or external use.
+   * This ensures compatibility with Node.js testing environments.
+   */
+  module.exports = background;
+} else {
+  /**
+   * Initialize the background service worker when running in the browser context.
+   * This entry point sets up the extension's background processes.
+   */
+  background.initBackground(browser);
+}

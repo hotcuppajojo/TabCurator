@@ -46,6 +46,10 @@ global.chrome = {
         // Optionally update internal state if needed
         return Promise.resolve();
       }),
+      remove: jest.fn((keys) => {
+        // Simulate removal of items
+        return Promise.resolve();
+      }),
     },
     local: {
       get: jest.fn(),
@@ -101,7 +105,7 @@ global.chrome = {
   },
 };
 
-// Supports cross-browser compatibility testing
+// Set up browser mock using Chrome mock
 global.browser = global.chrome;
 
 // Mock global `self` for Service Worker with proper jest mock functions

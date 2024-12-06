@@ -17,7 +17,7 @@ test.describe('Popup script integration tests', () => {
     page = await browserContext.newPage();
 
     // Wait longer for extension to load
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(500); // Reduced from 1000ms to 500ms
 
     // Inject browser mock before navigating
     await injectBrowserMock(page);
@@ -28,11 +28,20 @@ test.describe('Popup script integration tests', () => {
       timeout: 30000
     });
 
-    // Reset mocks and verify initialization
+    // Ensure extension is fully loaded
+    await page.waitForFunction(() => !!window.popupInstance, { timeout: 10000 });
+
+    // Ensure mocks are initialized before any test actions
+    await page.waitForFunction(() => {
+      return window.browser?._debug?.getMockCalls && 
+             window.browser.runtime?.sendMessage?.mock;
+    }, { timeout: 10000 });
+
+    // Reset mocks after ensuring they exist
     await page.evaluate(() => {
       window.testHelpers.resetMocks();
+      window.browser.runtime.sendMessage.mock = { calls: [] };
       window.browser.runtime.sendMessage.shouldFail = false;
-      window.browser.runtime.sendMessage.mock.calls = [];
     });
 
     // Ensure popup is initialized
@@ -81,8 +90,8 @@ test.describe('Popup script integration tests', () => {
     // Click and wait for action to complete
     await page.click('#suspend-inactive-tabs');
     
-    // Increase wait time to ensure message is processed
-    await page.waitForTimeout(500); // Increased from 100ms to 500ms
+    // Increased timeout to match configuration
+    await page.waitForTimeout(300); // Reduced from 500ms to 300ms
 
     const calls = await page.evaluate(() => window.browser.runtime.sendMessage.mock.calls);
     expect(calls.length).toBeGreaterThan(0);

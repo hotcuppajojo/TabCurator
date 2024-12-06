@@ -26,10 +26,24 @@ const injectBrowserMock = async (page) => {
         }
       }
       
-      mockFn.mock = { calls: [] };
+      mockFn.mock = { calls: [], listeners: [] }; // Added 'listeners' array
       mockFn.implementation = null;
       mockFn.shouldFail = false; // Added to control failure simulation
       
+      return mockFn;
+    }
+
+    // Replace jest.fn with custom mock function
+    function createCustomMockFn(impl) {
+      const calls = [];
+      const mockFn = (...args) => {
+        calls.push(args);
+        if (impl) {
+          return impl(...args);
+        }
+      };
+      mockFn.mock = { calls };
+      mockFn.shouldFail = false; // Control failure simulation
       return mockFn;
     }
 
@@ -84,7 +98,7 @@ const injectBrowserMock = async (page) => {
       runtime: {
         lastError: null,
         onMessage: { addListener: createMockFn() },
-        sendMessage: createMockFn((message, callback) => {
+        sendMessage: createCustomMockFn((message, callback) => {
           if (window.browser.runtime.sendMessage.shouldFail) {
             window.browser.runtime.lastError = { message: 'Simulated error' };
             if (callback) {
@@ -126,6 +140,19 @@ const injectBrowserMock = async (page) => {
         create: createMockFn(),
         onAlarm: { addListener: createMockFn() }
       }
+    };
+
+    // Ensure that alarms API is fully mocked
+    window.browser.alarms = {
+      create: createMockFn(),
+      onAlarm: { addListener: createMockFn() }
+    };
+
+    // Add logging to mock functions
+    const originalSendMessage = window.browser.runtime.sendMessage;
+    window.browser.runtime.sendMessage = (...args) => {
+      console.log('runtime.sendMessage called with:', args);
+      return originalSendMessage.apply(this, args);
     };
 
     // Ensure chrome alias
@@ -186,6 +213,13 @@ const injectBrowserMock = async (page) => {
       });
     }
   });
+
+  // Remove any accidentally inserted lines unrelated to browser mocking.
+
+  // Example:
+  // Remove lines like:
+  // await page.waitForFunction(() => !!window.popupInstance, { timeout: 5000 });
+  // timeout: 5000, // Example reduction from a higher value to 5 seconds
 };
 
 module.exports = { injectBrowserMock };

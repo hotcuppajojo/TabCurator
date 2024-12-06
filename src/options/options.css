@@ -56,3 +56,30 @@
 input.invalid {
   border-color: red;
 }
+
+.options-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Responsive design adjustments */
+@media (max-width: 600px) {
+  .options-container {
+    padding: 10px;
+  }
+
+  .options-container h1 {
+    font-size: 1.5em;
+  }
+
+  .rule-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .rule-item input {
+    margin-right: 0;
+    margin-bottom: 10px;
+  }
+}

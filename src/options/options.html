@@ -35,46 +35,10 @@
         flex-shrink: 0;
     }
   </style>
+  <script src="../vendor/browser-polyfill.js"></script>
 </head>
 <body>
-  <!-- Primary options interface container -->
-  <!-- Semantic structure follows h1->h2 hierarchy for accessibility and SEO -->
-  <h1>TabCurator Options</h1>
-
-  <!-- Core settings section -->
-  <!-- Form controls wrapped in div containers for consistent spacing and styling -->
-  <div>
-    <!-- Inactivity threshold control -->
-    <!-- Numeric input with min=1 prevents invalid states -->
-    <!-- Label-input association via 'for' attribute ensures accessibility -->
-    <label for="inactiveThreshold">Inactivity threshold (minutes):</label>
-    <input type="number" id="inactiveThreshold" min="1" value="60">
-  </div>
-
-  <div>
-    <!-- Tab limit control -->
-    <!-- Default 100 based on UX research and browser performance considerations -->
-    <label for="tabLimit">Maximum Number of Tabs:</label>
-    <input type="number" id="tabLimit" min="1" value="100">
-  </div>
-
-  <!-- Action controls -->
-  <!-- Single-responsibility buttons maintain clear user interaction model -->
-  <button id="save-options">Save</button>
-  <div id="save-success">Options saved successfully</div>
-
-  <!-- Rule management section -->
-  <!-- Dynamic rule interface using JavaScript for CRUD operations -->
-  <h2>Manage Rules</h2>
-  <div id="rulesList">
-    <!-- Dynamic content container for rule entries -->
-    <!-- Rules populated via options.js during runtime -->
-  </div>
-  <button id="addRuleButton">Add Rule</button>
-  <button id="saveRulesButton">Save Rules</button>
-
-  <!-- Script loading -->
-  <!-- Deferred loading improves initial page render performance -->
-  <script src="options.js"></script>
+  <div id="root"></div>
+  <script src="options.bundle.js"></script>
 </body>
 </html>
