@@ -1,10 +1,7 @@
 // tests/jest/tagUtils.test.js
 
-const { createMockBrowser } = require('./mocks/browserMock.js');
-const mockBrowser = createMockBrowser(); // Initialize the mocked browser
-
-// Mock webextension-polyfill before importing modules that use it
-jest.mock('webextension-polyfill', () => mockBrowser);
+// Import the mocked browser
+const browser = require('webextension-polyfill');
 
 // Import after browser mock is set up
 const { tagTab, archiveTab } = require('../../src/utils/tagUtils.js');
@@ -27,7 +24,7 @@ describe("Tag Utils", () => {
     jest.clearAllMocks();
     console.error = jest.fn(); // Mock console.error
     // Get fresh instance of the mocked browser
-    browser = require('webextension-polyfill');
+    // browser = require('webextension-polyfill');
   });
 
   describe('tagTab', () => {

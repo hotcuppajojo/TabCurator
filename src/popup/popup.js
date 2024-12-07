@@ -111,7 +111,9 @@ function initPopup() {
         if (taggingPrompt) {
           taggingPrompt.style.display = 'block';
         }
-        sendResponse({ message: 'Tagging prompt displayed.' });
+        if (typeof sendResponse === 'function') {
+          sendResponse({ message: 'Tagging prompt displayed.' });
+        }
       }
     });
   }
@@ -121,6 +123,36 @@ function initPopup() {
    */
   function initializeEventListeners() {
     if (isInitialized) return;
+
+    // Add archive button event listener
+    document.getElementById('archiveTabButton')?.addEventListener('click', async () => {
+      const tabId = Number(document.getElementById('currentTabId')?.value);
+      const tag = document.getElementById('tagInput')?.value || 'Research';
+      try {
+        await browser.runtime.sendMessage({ action: 'archiveTab', tabId, tag });
+        window.close();
+      } catch (error) {
+        console.error('Error archiving tab:', error);
+      }
+    });
+
+    // Add view archives button event listener
+    document.getElementById('viewArchivesButton')?.addEventListener('click', async () => {
+      try {
+        await browser.runtime.sendMessage({ action: 'getArchivedTabs' });
+      } catch (error) {
+        console.error('Error loading archived tabs:', error);
+      }
+    });
+
+    // Add view sessions button event listener
+    document.getElementById('viewSessionsButton')?.addEventListener('click', async () => {
+      try {
+        await browser.runtime.sendMessage({ action: 'getSessions' });
+      } catch (error) {
+        console.error('Error loading sessions:', error);
+      }
+    });
 
     document.getElementById('saveSessionButton')?.addEventListener('click', () => {
       const sessionName = prompt('Enter a name for this session:');

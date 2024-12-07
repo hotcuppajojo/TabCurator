@@ -1,12 +1,8 @@
 // tests/jest/stateManager.test.js
 
-const { createMockBrowser } = require('./mocks/browserMock.js');
-const mockBrowser = createMockBrowser();
+const browser = require('webextension-polyfill');
 
-// Mock webextension-polyfill before importing modules that use it
-jest.mock('webextension-polyfill', () => mockBrowser);
-
-// Import after mock is set up
+// Import modules that use the mock
 const { store, getIsTaggingPromptActive, getArchivedTabs, getTabActivity, 
         getActionHistory, getSavedSessions, setIsTaggingPromptActive, 
         updateTabActivity, archiveTab, undoLastAction, 
@@ -15,20 +11,13 @@ const { createBulkTabs, createComplexTabs } = require('./utils/testUtils');
 
 describe("State Manager", () => {
   beforeEach(async () => {
-    store.dispatch({ type: 'RESET_STATE' });
     jest.clearAllMocks();
+    store.dispatch({ type: 'RESET_STATE' });
 
-    // Default mock: return empty archivedTabs unless overridden in specific tests
-    mockBrowser.storage.sync.get.mockResolvedValue({
-      archivedTabs: {}
-    });
-
-    // Set the mock data in storage.sync
-    await mockBrowser.storage.sync.set({
-      archivedTabs: {}
-    });
-
-    // Initialize state from storage to apply the mock data
+    // Setup default mock responses
+    browser.storage.sync.get.mockResolvedValue({ archivedTabs: {} });
+    
+    // Initialize state
     await initializeStateFromStorage();
   });
 
@@ -181,8 +170,7 @@ describe("State Manager", () => {
 
   describe("Storage Integration", () => {
     test("should initialize state from storage", async () => {
-      // Override the default mock for this test
-      mockBrowser.storage.sync.get.mockResolvedValueOnce({
+      browser.storage.sync.get.mockResolvedValueOnce({
         archivedTabs: { Work: [{ title: 'Stored Tab', url: 'https://stored.com' }] }
       });
 
@@ -199,7 +187,7 @@ describe("State Manager", () => {
       const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
 
       // Mock the storage get method to reject with an error
-      mockBrowser.storage.sync.get.mockRejectedValueOnce(new Error('Storage error'));
+      browser.storage.sync.get.mockRejectedValueOnce(new Error('Storage error'));
 
       // Initialize state from storage, which should handle the error internally
       await initializeStateFromStorage();
@@ -277,7 +265,7 @@ describe("State Manager", () => {
   });
 
   test("should initialize with predefined archivedTabs", async () => {
-    mockBrowser.storage.sync.get.mockResolvedValueOnce({
+    browser.storage.sync.get.mockResolvedValueOnce({
       archivedTabs: { Work: [{ title: 'Predefined Tab', url: 'https://predefined.com' }] }
     });
 
@@ -286,7 +274,6 @@ describe("State Manager", () => {
 
     const state = store.getState();
     expect(state.archivedTabs).toEqual({
-      Work: [{ title: 'Predefined Tab', url: 'https://predefined.com' }]
-    });
+      Work: [{ title: 'Predefined Tab', url: 'https://predefined.com' }]    });
   });
 });

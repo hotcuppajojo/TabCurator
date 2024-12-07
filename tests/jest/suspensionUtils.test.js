@@ -1,23 +1,18 @@
 // tests/jest/suspensionUtils.test.js
 
-const { createMockBrowser } = require('./mocks/browserMock.js');
-const mockBrowser = createMockBrowser(); // Initialize the mocked browser
-
-// Mock webextension-polyfill before importing suspendTab
-jest.mock('webextension-polyfill', () => mockBrowser);
+// Import the mocked browser
+const browser = require('webextension-polyfill');
 
 // Import suspendTab after mock is set up
 const { suspendTab } = require('../../src/utils/suspensionUtils.js');
 
 describe('Suspension Utils', () => {
-  let browser;
-  
   beforeEach(() => {
     jest.clearAllMocks();
     console.warn = jest.fn();
     console.error = jest.fn();
     // Get fresh instance of the mocked browser
-    browser = require('webextension-polyfill');
+    // browser = require('webextension-polyfill');
   });
 
   test('should suspend a tab by discarding it if supported', async () => {

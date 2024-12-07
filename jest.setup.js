@@ -1,5 +1,19 @@
 // jest.setup.js
 
+const mockBrowser = require('./tests/jest/mocks/browserMock.js');
+
+// Set up the global browser mock
+global.chrome = mockBrowser;
+global.browser = mockBrowser;
+
+// Mock console methods
+global.console = {
+  ...global.console,
+  error: jest.fn(),
+  warn: jest.fn(),
+  log: jest.fn()
+};
+
 // Update createMockListener to include callListeners helper
 function createMockListener() {
   const listeners = [];
@@ -20,7 +34,13 @@ global.chrome = {
   // Simulates extension messaging system for component communication
   runtime: {
     onMessage: createMockListener(),
-    sendMessage: jest.fn(),
+    sendMessage: jest.fn((message, callback) => {
+      // Simulate async behavior
+      if (callback) {
+        callback({ success: true });
+      }
+      return Promise.resolve({ success: true });
+    }),
     lastError: null,
     onInstalled: {
       addListener: jest.fn((callback) => {
@@ -105,8 +125,8 @@ global.chrome = {
   },
 };
 
-// Set up browser mock using Chrome mock
-global.browser = global.chrome;
+// Make the mocked browser object available globally
+// global.browser = require('webextension-polyfill');
 
 // Mock global `self` for Service Worker with proper jest mock functions
 global.self = global; // Ensure 'self' refers to the global object

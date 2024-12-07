@@ -1,22 +1,24 @@
 // tests/jest/background.test.js
 
-const { createMockBrowser } = require('./mocks/browserMock.js');
-const { createMockTab, createBulkTabs, createComplexTabs } = require('./utils/testUtils');
-const mockBrowser = createMockBrowser();
+// Remove imports of createMockBrowser
+// const { createMockBrowser } = require('../jest/mocks/browserMock.js');
+// const mockBrowser = createMockBrowser();
 
-// Mock webextension-polyfill before importing modules
-jest.mock('webextension-polyfill', () => mockBrowser);
+// Import the mocked browser
+const browser = require('webextension-polyfill');
+
+const { createMockTab, createBulkTabs, createComplexTabs } = require('./utils/testUtils');
 
 const { queryTabs, getTab, createTab, updateTab, removeTab } = require('../../src/utils/tabUtils.js');
 
 describe("Tab Utils", () => {
-  let browser;
-
   beforeEach(() => {
     jest.clearAllMocks();
     console.error = jest.fn();
     console.warn = jest.fn();
-    browser = require('webextension-polyfill');
+    // ...existing code...
+    // Remove or comment out the following line to prevent reassignment
+    // browser = require('webextension-polyfill');
   });
 
   describe('queryTabs', () => {

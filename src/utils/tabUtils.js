@@ -3,7 +3,7 @@
  * @fileoverview Utility functions for querying and managing browser tabs.
  * Provides browser-agnostic implementations for tab operations.
  */
-import browser from 'webextension-polyfill';
+const browser = require('webextension-polyfill');
 
 /**
  * Wrapper for querying tabs.

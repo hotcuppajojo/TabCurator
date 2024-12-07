@@ -1,3 +1,4 @@
+import { createMockTab, createBulkTabs, createTaggedTab, createComplexTabs } from './utils/testUtils.js';
 // tests/jest/popup.test.js
 
 /**
@@ -7,17 +8,18 @@
  * Tests tab management, archival, and session handling features
  */
 
-const { createMockBrowser } = require("./mocks/browserMock");
 const initPopup = require("../../src/popup/popup");
 
 describe("Popup script", () => {
-  let mockBrowser;
   let popup;
+
+  beforeAll(() => {
+    browser.tabs.discard = jest.fn();
+  });
 
   beforeEach(() => {
     // Reset test environment and mocks
     jest.clearAllMocks();
-    mockBrowser = createMockBrowser();
     window.close = jest.fn();
 
     // Configure document readyState for test environment
@@ -48,24 +50,26 @@ describe("Popup script", () => {
       </div>
     `;
 
-    // Initialize popup instance with mock browser
-    popup = initPopup(mockBrowser);
+    // Initialize popup instance without passing mockBrowser
+    popup = initPopup();
+
+    // Use utility function to create mock tabs
+    browser.tabs.query.mockResolvedValue(createBulkTabs(3));
+
+    // Initialize event listeners for the tests
+    popup._testHelpers.initializeEventListeners();
   });
 
   /**
    * Validates tab loading functionality
    * Tests proper rendering of tab list in popup UI
    */
-  it("should load tabs into the popup", () => {
+  it("should load tabs into the popup", async () => {
     // Configure mock tab response
-    mockBrowser.tabs.query.mockImplementation((queryInfo, callback) => {
-      callback([
-        { title: 'Tab 1' },
-        { title: 'Tab 2' },
-      ]);
-    });
+    const mockTabs = createBulkTabs(2);
+    browser.tabs.query.mockResolvedValue(mockTabs);
 
-    popup.loadTabs();
+    await popup.loadTabs();
 
     // Verify tab list rendering
     const tabList = document.getElementById("tab-list");
@@ -83,18 +87,15 @@ describe("Popup script", () => {
     popup.setupSuspendButton();
 
     // Configure mock message response
-    mockBrowser.runtime.sendMessage.mockImplementation((message, callback) => {
-      callback({ message: 'Inactive tabs suspended' });
-    });
+    browser.runtime.sendMessage.mockResolvedValue({ message: 'Inactive tabs suspended' });
 
     // Trigger suspension action
     const suspendButton = document.getElementById("suspend-inactive-tabs");
     suspendButton.click();
 
     // Verify message sending
-    expect(mockBrowser.runtime.sendMessage).toHaveBeenCalledWith(
-      { action: 'suspendInactiveTabs' },
-      expect.any(Function)
+    expect(browser.runtime.sendMessage).toHaveBeenCalledWith(
+      { action: 'suspendInactiveTabs' }
     );
   });
 
@@ -103,20 +104,16 @@ describe("Popup script", () => {
    * Tests proper display of tagging prompt when prompted
    */
   it("should display tagging prompt when prompted", () => {
-    // Initialize event listeners
-    popup.setupTaggingPrompt();
+    // Mock the sendResponse function
+    const sendResponse = jest.fn();
 
     // Simulate receiving a promptTagging message
-    mockBrowser.runtime.onMessage.addListener.mockImplementation((handler) => {
-      handler({ action: "promptTagging", tabId: 1 }, null, jest.fn());
-    });
-
-    // Trigger the message
-    const messageHandler = mockBrowser.runtime.onMessage.addListener.mock.calls[0][0];
-    messageHandler({ action: "promptTagging", tabId: 1 }, null, jest.fn());
+    const messageHandler = browser.runtime.onMessage.addListener.mock.calls[0][0];
+    messageHandler({ action: "promptTagging", tabId: 1 }, null, sendResponse);
 
     const taggingPrompt = document.getElementById("tagging-prompt");
     expect(taggingPrompt.style.display).toBe("block");
+    expect(sendResponse).toHaveBeenCalledWith({ message: 'Tagging prompt displayed.' });
   });
 
   /**
@@ -124,31 +121,32 @@ describe("Popup script", () => {
    * Tests proper tagging of the oldest tab
    */
   it("should handle tagging the oldest tab", async () => {
-    popup.setupTaggingPrompt();
-  
-    // Mock storage.local.get implementation
-    mockBrowser.storage.local.get.mockImplementation((key, callback) => {
-      callback({ oldestTabId: 1 });
-    });
-  
-    // Mock tabs.get implementation
-    mockBrowser.tabs.get.mockImplementation((tabId, callback) => {
-      callback({ id: tabId, title: `Tab ${tabId}` });
-    });
-  
+    // Mock GET_STATE response
+    browser.runtime.sendMessage
+      .mockResolvedValueOnce({ state: { oldestTabId: 1 } }) // For GET_STATE
+      .mockResolvedValueOnce({ success: true }) // For DISPATCH_ACTION
+      .mockResolvedValueOnce({ success: true }); // For tagAdded
+
+    // Mock tabs.get response
+    const taggedTab = createTaggedTab(1, 'Tagged');
+    browser.tabs.get.mockResolvedValue(taggedTab);
+
     const tagButton = document.getElementById("tag-oldest-tab");
     tagButton.click();
-  
-    // Wait for async operations
+
+    // Wait for all async operations to complete
     await new Promise(resolve => setTimeout(resolve, 0));
-  
-    expect(mockBrowser.storage.local.get).toHaveBeenCalledWith('oldestTabId', expect.any(Function));
-    expect(mockBrowser.tabs.get).toHaveBeenCalledWith(1, expect.any(Function));
-    expect(mockBrowser.tabs.update).toHaveBeenCalledWith(
-      1,
-      { title: "[Tagged] Tab 1" },
-      expect.any(Function)
-    );
+
+    expect(browser.tabs.get).toHaveBeenCalledWith(1);
+    expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
+      action: 'DISPATCH_ACTION',
+      payload: {
+        type: 'ARCHIVE_TAB',
+        tabId: 1,
+        tag: 'Tagged',
+        tabData: { title: taggedTab.title, url: taggedTab.url },
+      },
+    });
   });
 
   /**
@@ -157,22 +155,25 @@ describe("Popup script", () => {
    */
   it("should handle click event for archive tab button", async () => {
     const archiveButton = document.getElementById("archiveTabButton");
-    
+
+    // Mock tabs.get response for getting current tab
+    const currentTab = createMockTab(1, { title: 'Current Tab', url: 'https://current.com' });
+    browser.tabs.get.mockResolvedValue(currentTab);
+
     // Setup mock response
-    mockBrowser.runtime.sendMessage.mockImplementation((message, callback) => {
-      callback({ success: true });
-      return Promise.resolve({ success: true });
-    });
-    
+    browser.runtime.sendMessage.mockResolvedValue({ success: true });
+
     archiveButton.click();
-    
-    // Wait for all promises to resolve
+
+    // Wait for all promises to resolve and use flushPromises utility
     await Promise.resolve();
-    
-    expect(mockBrowser.runtime.sendMessage).toHaveBeenCalledWith(
-      { action: "archiveTab", tabId: 1, tag: "Research" },
-      expect.any(Function)
-    );
+    await new Promise(process.nextTick);
+
+    expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
+      action: 'archiveTab',
+      tabId: 1,
+      tag: 'Research',
+    });
     expect(window.close).toHaveBeenCalled();
   });
 
@@ -182,28 +183,24 @@ describe("Popup script", () => {
    */
   it("should handle click event for view archived tabs button", async () => {
     const viewArchivesButton = document.getElementById("viewArchivesButton");
-    
+
     // Setup mock response before click
-    mockBrowser.runtime.sendMessage.mockImplementation((message, callback) => {
-      if (message.action === "getArchivedTabs") {
-        callback({
-          archivedTabs: {
-            Research: [{ title: "Tab 1", url: "https://example.com" }],
-            Work: [{ title: "Tab 2", url: "https://work.com" }]
-          }
-        });
-      }
+    browser.runtime.sendMessage.mockResolvedValueOnce({
+      archivedTabs: {
+        Research: [{ title: "Tab 1", url: "https://example.com" }],
+        Work: [{ title: "Tab 2", url: "https://work.com" }],
+      },
     });
-    
+
     viewArchivesButton.click();
-    
-    // Wait for all promises to resolve
+
+    // Wait for all promises to resolve and use flushPromises utility
     await Promise.resolve();
-    
-    expect(mockBrowser.runtime.sendMessage).toHaveBeenCalledWith(
-      { action: "getArchivedTabs" },
-      expect.any(Function)
-    );
+    await new Promise(process.nextTick);
+
+    expect(browser.runtime.sendMessage).toHaveBeenCalledWith({ 
+      action: "getArchivedTabs" 
+    });
   });
 
   /**
@@ -214,8 +211,8 @@ describe("Popup script", () => {
     const saveSessionButton = document.getElementById("saveSessionButton");
     
     // Reset prompt and message mocks
-    global.prompt.mockClear();
-    mockBrowser.runtime.sendMessage.mockClear();
+    global.prompt.mockReturnValue("Morning Session");
+    browser.runtime.sendMessage.mockResolvedValue({ success: true });
     
     // Initialize event handlers
     document.dispatchEvent(new Event('DOMContentLoaded'));
@@ -224,11 +221,11 @@ describe("Popup script", () => {
     saveSessionButton.click();
     
     // Allow async operations to complete
-    await new Promise(resolve => setTimeout(resolve));
+    await Promise.resolve();
     
     // Verify prompt and message sending
     expect(global.prompt).toHaveBeenCalledWith("Enter a name for this session:");
-    expect(mockBrowser.runtime.sendMessage).toHaveBeenCalledWith(
+    expect(browser.runtime.sendMessage).toHaveBeenCalledWith(
       { action: "saveSession", sessionName: "Morning Session" }
     );
   });
@@ -239,30 +236,36 @@ describe("Popup script", () => {
    */
   it("should handle click event for view sessions button", async () => {
     const viewSessionsButton = document.getElementById("viewSessionsButton");
-    
+
     // Configure mock session data
-    mockBrowser.runtime.sendMessage.mockImplementation((message, callback) => {
-      if (message.action === "getSessions") {
-        callback({
-          sessions: {
-            "Morning Session": [{ title: "Tab 1", url: "https://example.com" }],
-            "Evening Session": [{ title: "Tab 2", url: "https://work.com" }]
-          }
-        });
-      }
+    browser.runtime.sendMessage.mockResolvedValueOnce({
+      sessions: {
+        "Morning Session": [{ title: "Tab 1", url: "https://example.com" }],
+        "Evening Session": [{ title: "Tab 2", url: "https://work.com" }],
+      },
     });
-    
-    // Initialize handlers and trigger view
-    document.dispatchEvent(new Event('DOMContentLoaded'));
+
     viewSessionsButton.click();
-    
-    // Allow async operations to complete
-    await new Promise(resolve => setTimeout(resolve));
-    
-    // Verify session retrieval request
-    expect(mockBrowser.runtime.sendMessage).toHaveBeenCalledWith(
-      { action: "getSessions" },
-      expect.any(Function)
-    );
+
+    // Wait for all promises to resolve and use flushPromises utility
+    await Promise.resolve();
+    await new Promise(process.nextTick);
+
+    expect(browser.runtime.sendMessage).toHaveBeenCalledWith({ 
+      action: "getSessions" 
+    });
+  });
+
+  /**
+   * Validates complex tab scenarios
+   * Tests handling of complex tab scenarios
+   */
+  it("should handle complex tab scenarios", async () => {
+    const complexTabs = createComplexTabs();
+    browser.tabs.query.mockResolvedValue(complexTabs);
+
+    await popup.loadTabs();
+
+    // Add your assertions here to verify that complex tabs are handled correctly
   });
 });

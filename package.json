@@ -7,10 +7,12 @@
     "package-firefox-release": "zip -r build/firefox-extension.zip build/firefox/",
     "package-safari-release": "zip -r build/safari-extension.zip build/safari/",
     "test": "jest --config jest.config.js",
-    "build": "webpack --mode production"
+    "build": "webpack --mode production",
+    "jest:clearCache": "jest --clearCache"
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",
+    "@babel/plugin-transform-runtime": "^7.25.9",
     "@babel/preset-env": "^7.26.0",
     "@babel/preset-react": "^7.14.5",
     "babel-jest": "^29.7.0",
