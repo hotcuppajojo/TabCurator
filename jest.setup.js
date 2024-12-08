@@ -1,6 +1,7 @@
 // jest.setup.js
 
 const mockBrowser = require('./tests/jest/mocks/browserMock.js');
+const { createMockListener } = require('./tests/jest/mocks/browserMock.js'); // Import from browserMock.js
 
 // Set up the global browser mock
 global.chrome = mockBrowser;
@@ -14,20 +15,12 @@ global.console = {
   log: jest.fn()
 };
 
-// Update createMockListener to include callListeners helper
-function createMockListener() {
-  const listeners = [];
-  const mock = {
-    addListener: jest.fn(listener => listeners.push(listener)),
-    callListeners: (...args) => listeners.forEach(listener => listener(...args)),
-    hasListener: jest.fn(() => listeners.length > 0),
-    removeListener: jest.fn(listener => {
-      const index = listeners.indexOf(listener);
-      if (index > -1) listeners.splice(index, 1);
-    })
-  };
-  return mock;
-}
+// Remove the duplicated createMockListener function
+
+// Export createMockListener for importing in tests
+module.exports = {
+  createMockListener
+};
 
 // Mocks Chrome API to avoid need for real browser in tests
 global.chrome = {
@@ -42,13 +35,7 @@ global.chrome = {
       return Promise.resolve({ success: true });
     }),
     lastError: null,
-    onInstalled: {
-      addListener: jest.fn((callback) => {
-        // Store the callback for later use
-        global.chrome.runtime.onInstalled.callback = callback;
-      }),
-      callback: null // Add storage for the callback
-    },
+    onInstalled: createMockListener(),
   },
   // Mocks storage for testing data persistence scenarios
   storage: {

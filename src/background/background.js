@@ -139,7 +139,21 @@ const background = {
       return;
     }
 
+    // Ensure Redux store is initialized with default state
+    store.dispatch({ type: 'RESET_STATE' });
+
     console.log("Background service worker started.");
+
+    // Register all required tab event listeners
+    browserInstance.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      if (changeInfo.status === 'complete') {
+        this.applyRulesToTab(tab, browserInstance);
+      }
+    });
+
+    browserInstance.tabs.onCreated.addListener((tab) => {
+      store.dispatch({ type: "UPDATE_TAB_ACTIVITY", tabId: tab.id, timestamp: Date.now() });
+    });
 
     // Set default storage values on extension installation
     browserInstance.runtime.onInstalled.addListener(async () => {
@@ -167,7 +181,7 @@ const background = {
     });
 
     browserInstance.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
-      console.log("Message received from:", sender.url || "Unknown sender");
+      console.log("Message received from:", sender?.url || "Unknown sender");
       try {
         switch (message.action) {
           case "saveSession":

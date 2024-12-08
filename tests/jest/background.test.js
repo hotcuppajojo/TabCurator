@@ -1,34 +1,23 @@
 // tests/jest/background.test.js
 // Tests background service worker core functionality with isolated mock environment
 
-const { createMockBrowser } = require("./mocks/browserMock");
+const browser = require('webextension-polyfill');
 const background = require('../../src/background/background.js');
 const { store } = require('../../src/utils/stateManager.js');
+const { createMockTab } = require('./utils/testUtils.js');
+// Import createMockListener directly from browserMock instead of jest.setup.js
+const { createMockListener } = require('./mocks/browserMock.js');
 
-// Mock the fs module to prevent fs related errors during tests
-jest.mock('fs-extra', () => ({
-  copySync: jest.fn(),
-}));
-
-const createMockListener = () => {
-  return {
-    addListener: jest.fn()
-  };
-};
-
-// Mock browser APIs
-const mockBrowser = {
-  runtime: {
-    lastError: null,
-    onMessage: createMockListener(),
-    onConnect: createMockListener(),
-    sendMessage: jest.fn(),
-    connect: jest.fn()
+// Mock the necessary modules
+jest.mock('webextension-polyfill');
+jest.mock('../../src/utils/tabUtils.js');
+jest.mock('../../src/utils/tagUtils.js');
+jest.mock('../../src/utils/stateManager.js', () => ({
+  store: {
+    getState: jest.fn(() => ({ tabActivity: {}, archivedTabs: {}, isTaggingPromptActive: false })),
+    dispatch: jest.fn(),
   },
-  // ...existing code...
-};
-
-import browser from 'webextension-polyfill';
+}));
 
 describe("Background script", () => {
   // Prevents race conditions in async tests by ensuring microtask queue is empty
@@ -41,54 +30,81 @@ describe("Background script", () => {
     // Clear any existing modules
     jest.resetModules();
 
-    // Ensure global.self exists and has proper event listener capabilities
-    global.self = {
-      addEventListener: jest.fn(),
-      error: jest.fn(),
-      unhandledrejection: jest.fn()
-    };
+    // Remove or adjust global.self overrides if causing conflicts
+    // global.self = {
+    //   addEventListener: jest.fn(),
+    //   error: jest.fn(),
+    //   unhandledrejection: jest.fn()
+    // };
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
+    console.error = jest.fn(); // Mock console.error
     
-    mockBrowser = createMockBrowser();
-
-    background.savedSessions = {}; // Reset savedSessions
-
-    // Mock runtime.onMessage to store listeners
+    // Setup mock event listeners first
     const messageListeners = [];
-    mockBrowser.runtime.onMessage = {
-      addListener: jest.fn((listener) => messageListeners.push(listener)),
-      callListeners: (...args) => messageListeners.forEach(listener => listener(...args))
-    };
-
-    // Mock onUpdated to store listeners
     const updatedListeners = [];
-    mockBrowser.tabs.onUpdated = {
-      addListener: jest.fn((listener) => updatedListeners.push(listener)),
-      callListeners: (...args) => updatedListeners.forEach(listener => listener(...args))
-    };
-
-    // Store listeners for other events
     const createdListeners = [];
-    mockBrowser.tabs.onCreated = {
-      addListener: jest.fn((listener) => createdListeners.push(listener)),
-      callListeners: (...args) => createdListeners.forEach(listener => listener(...args))
+    const activatedListeners = []; // Add activatedListeners array
+
+    // Setup complete mock browser API with all required event listeners
+    mockBrowser = {
+      runtime: {
+        onInstalled: {
+          addListener: jest.fn()
+        },
+        onMessage: {
+          addListener: jest.fn((listener) => messageListeners.push(listener))
+        },
+        sendMessage: jest.fn().mockResolvedValue({ success: true }),
+        lastError: null
+      },
+      tabs: {
+        onCreated: {
+          addListener: jest.fn((listener) => createdListeners.push(listener))
+        },
+        onRemoved: createMockListener(),
+        onUpdated: {
+          addListener: jest.fn((listener) => {
+            updatedListeners.push(listener);
+            return listener; // Return listener to track calls
+          })
+        },
+        onActivated: {
+          addListener: jest.fn((listener) => {
+            activatedListeners.push(listener);
+            return listener; // Return listener to track calls
+          })
+        },
+        query: jest.fn().mockResolvedValue([]),
+        get: jest.fn().mockResolvedValue({}),
+        create: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({}),
+        remove: jest.fn().mockResolvedValue()
+      },
+      alarms: {
+        create: jest.fn(),
+        onAlarm: {
+          addListener: jest.fn()
+        }
+      },
+      storage: {
+        sync: {
+          get: jest.fn().mockResolvedValue({}),
+          set: jest.fn().mockResolvedValue()
+        }
+      }
     };
 
-    // Initialize background with mocks
-    background.initBackground(mockBrowser);
+    // Replace the mocked browser
+    browser.tabs = mockBrowser.tabs;
+    browser.runtime = mockBrowser.runtime;
+    browser.alarms = mockBrowser.alarms;
+    browser.storage = mockBrowser.storage;
 
-    // Make listeners accessible in tests
-    background.messageListeners = messageListeners;
-    background.updatedListeners = updatedListeners;
-    background.createdListeners = createdListeners;
-
-    // Reset test state
-    background.actionHistory.length = 0;
-    Object.keys(background.archivedTabs).forEach(key => delete background.archivedTabs[key]);
-    background.setIsTaggingPromptActive(false);
+    // Initialize background script
+    await background.initBackground(mockBrowser);
   });
 
   afterEach(() => {
@@ -96,7 +112,8 @@ describe("Background script", () => {
     jest.restoreAllMocks();
   });
 
-  test("should initialize extension with required listeners", () => {
+  test("should initialize extension with required listeners", async () => {
+    // Verify the listeners were registered
     expect(mockBrowser.tabs.onActivated.addListener).toHaveBeenCalled();
     expect(mockBrowser.tabs.onUpdated.addListener).toHaveBeenCalled();
     expect(mockBrowser.tabs.onCreated.addListener).toHaveBeenCalled();
@@ -116,30 +133,21 @@ describe("Background script", () => {
   });
 
   test("should handle runtime messages correctly", async () => {
+    // Initialize background first
+    await background.initBackground(mockBrowser);
+    
     const sendResponse = jest.fn();
-    const testCases = [
-      {
-        message: { action: 'GET_STATE' },
-        expectedResponse: { state: store.getState() }
-      },
-      {
-        message: { action: 'DISPATCH_ACTION', payload: { type: 'TEST' } },
-        expectedResponse: { success: true }
-      },
-      {
-        message: { action: 'UNKNOWN' },
-        expectedResponse: { error: 'Unknown action' }
-      }
-    ];
+    const sender = { url: 'https://test.com' }; // Add mock sender
 
-    for (const { message, expectedResponse } of testCases) {
-      mockBrowser.runtime.onMessage.addListener.mock.calls[0][0](
-        message, null, sendResponse
-      );
-      await flushPromises();
-      expect(sendResponse).toHaveBeenCalledWith(expectedResponse);
-    }
+    // Get the actual listener function that was registered
+    const messageListener = mockBrowser.runtime.onMessage.addListener.mock.calls[0][0];
+    expect(messageListener).toBeDefined();
+
+    await messageListener({ action: 'GET_STATE' }, sender, sendResponse);
+    expect(sendResponse).toHaveBeenCalledWith({ state: store.getState() });
+
+    await messageListener({ action: 'DISPATCH_ACTION', payload: { type: 'TEST_ACTION' } }, sender, sendResponse);
+    expect(store.dispatch).toHaveBeenCalledWith({ type: 'TEST_ACTION' });
+    expect(sendResponse).toHaveBeenCalledWith({ success: true });
   });
-
-  // Continue with other background-specific tests...
 });

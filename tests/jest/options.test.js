@@ -1,8 +1,7 @@
-const { createMockBrowser } = require('./mocks/browserMock');
-const mockBrowser = createMockBrowser();
+// tests/jest/options.test.js
 
-// Mock webextension-polyfill before importing modules
-jest.mock('webextension-polyfill', () => mockBrowser);
+// Import the mocked browser
+const browser = require('webextension-polyfill');
 
 const { initOptions, saveOptions, addRuleToUI, validateInput, saveRules, loadOptions } = require('../../src/options/options');
 
