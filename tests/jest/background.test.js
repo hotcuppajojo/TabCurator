@@ -1,153 +1,161 @@
 // tests/jest/background.test.js
-// Tests background service worker core functionality with isolated mock environment
 
-const browser = require('webextension-polyfill');
+const mockBrowser = require('./mocks/browserMock.js');
 const background = require('../../src/background/background.js');
+
+// Ensure 'browser' is imported correctly
+const browser = require('webextension-polyfill');
 const { store } = require('../../src/utils/stateManager.js');
 const { createMockTab } = require('./utils/testUtils.js');
-// Import createMockListener directly from browserMock instead of jest.setup.js
-const { createMockListener } = require('./mocks/browserMock.js');
 
 // Mock the necessary modules
-jest.mock('webextension-polyfill');
-jest.mock('../../src/utils/tabUtils.js');
 jest.mock('../../src/utils/tagUtils.js');
 jest.mock('../../src/utils/stateManager.js', () => ({
   store: {
     getState: jest.fn(() => ({ tabActivity: {}, archivedTabs: {}, isTaggingPromptActive: false })),
     dispatch: jest.fn(),
   },
+  initializeStateFromStorage: jest.fn().mockResolvedValue(),
 }));
 
 describe("Background script", () => {
-  // Prevents race conditions in async tests by ensuring microtask queue is empty
-  const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
-
-  let mockBrowser;
-
-  // Handle module-level initialization
-  beforeAll(() => {
-    // Clear any existing modules
-    jest.resetModules();
-
-    // Remove or adjust global.self overrides if causing conflicts
-    // global.self = {
-    //   addEventListener: jest.fn(),
-    //   error: jest.fn(),
-    //   unhandledrejection: jest.fn()
-    // };
-  });
-
+  let mockTab;
+  let handlers = {};
+  
   beforeEach(async () => {
     jest.clearAllMocks();
-    console.error = jest.fn(); // Mock console.error
+    console.error.mockClear();
+    mockBrowser._testing.clearAllListeners();
+    handlers = {}; // Reset handlers
     
-    // Setup mock event listeners first
-    const messageListeners = [];
-    const updatedListeners = [];
-    const createdListeners = [];
-    const activatedListeners = []; // Add activatedListeners array
+    mockTab = createMockTab(1, {
+      title: 'Test Tab', 
+      url: 'https://example.com',
+      active: true
+    });
 
-    // Setup complete mock browser API with all required event listeners
-    mockBrowser = {
-      runtime: {
-        onInstalled: {
-          addListener: jest.fn()
-        },
-        onMessage: {
-          addListener: jest.fn((listener) => messageListeners.push(listener))
-        },
-        sendMessage: jest.fn().mockResolvedValue({ success: true }),
-        lastError: null
-      },
-      tabs: {
-        onCreated: {
-          addListener: jest.fn((listener) => createdListeners.push(listener))
-        },
-        onRemoved: createMockListener(),
-        onUpdated: {
-          addListener: jest.fn((listener) => {
-            updatedListeners.push(listener);
-            return listener; // Return listener to track calls
-          })
-        },
-        onActivated: {
-          addListener: jest.fn((listener) => {
-            activatedListeners.push(listener);
-            return listener; // Return listener to track calls
-          })
-        },
-        query: jest.fn().mockResolvedValue([]),
-        get: jest.fn().mockResolvedValue({}),
-        create: jest.fn().mockResolvedValue({}),
-        update: jest.fn().mockResolvedValue({}),
-        remove: jest.fn().mockResolvedValue()
-      },
-      alarms: {
-        create: jest.fn(),
-        onAlarm: {
-          addListener: jest.fn()
-        }
-      },
-      storage: {
-        sync: {
-          get: jest.fn().mockResolvedValue({}),
-          set: jest.fn().mockResolvedValue()
-        }
-      }
+    // Initialize ALL browser API mocks first with defaults
+    browser.tabs = {
+      onActivated: { addListener: jest.fn(fn => { handlers.activated = fn; }) },
+      onUpdated: { addListener: jest.fn(fn => { handlers.updated = fn; }) },
+      onCreated: { addListener: jest.fn(fn => { handlers.created = fn; }) },
+      get: jest.fn().mockResolvedValue(mockTab)
     };
 
-    // Replace the mocked browser
-    browser.tabs = mockBrowser.tabs;
-    browser.runtime = mockBrowser.runtime;
-    browser.alarms = mockBrowser.alarms;
-    browser.storage = mockBrowser.storage;
+    browser.runtime = {
+      onMessage: { addListener: jest.fn(fn => { handlers.message = fn; }) },
+      onInstalled: { addListener: jest.fn(fn => { handlers.installed = fn; }) },
+      onError: { addListener: jest.fn(fn => { handlers.error = fn; }) }
+    };
 
-    // Initialize background script
-    await background.initBackground(mockBrowser);
+    browser.alarms = { create: jest.fn() };
+    browser.storage = { 
+      sync: { 
+        set: jest.fn(),
+        get: jest.fn().mockResolvedValue({})
+      } 
+    };
+    
+    // Setup declarativeNetRequest with required methods and mock implementation
+    browser.declarativeNetRequest = {
+      updateDynamicRules: jest.fn().mockImplementation(async ({ addRules, removeRuleIds }) => {
+        return Promise.resolve(true);
+      }),
+      getDynamicRules: jest.fn().mockResolvedValue([]),
+      DEFAULT_PRIORITY: 1
+    };
+
+    // Reset store mock with empty initial state
+    store.dispatch.mockClear();
+    store.getState.mockReturnValue({
+      tabActivity: {},
+      archivedTabs: {},
+      isTaggingPromptActive: false
+    });
+
+    // Wait for initialization to complete
+    await background.initBackground(browser);
+    
+    // Simulate installation to trigger rule updates
+    if (handlers.installed) {
+      await handlers.installed();
+    }
   });
 
   afterEach(() => {
     jest.clearAllMocks();
     jest.restoreAllMocks();
+    browser._testing.clearAllListeners(); // Clear all listeners after each test
   });
 
   test("should initialize extension with required listeners", async () => {
-    // Verify the listeners were registered
-    expect(mockBrowser.tabs.onActivated.addListener).toHaveBeenCalled();
-    expect(mockBrowser.tabs.onUpdated.addListener).toHaveBeenCalled();
-    expect(mockBrowser.tabs.onCreated.addListener).toHaveBeenCalled();
-    expect(mockBrowser.runtime.onMessage.addListener).toHaveBeenCalled();
-    expect(mockBrowser.alarms.create).toHaveBeenCalledWith("checkForInactiveTabs", { periodInMinutes: 5 });
-  });
-
-  test("should initialize default settings on installation", async () => {
-    const onInstalledListener = mockBrowser.runtime.onInstalled.addListener.mock.calls[0][0];
-    await onInstalledListener();
+    // Wait for any pending promises to resolve
+    await new Promise(resolve => setTimeout(resolve, 0));
     
-    expect(mockBrowser.storage.sync.set).toHaveBeenCalledWith({
-      inactiveThreshold: 60,
-      tabLimit: 100,
-      rules: []
+    // Verify listeners and API calls
+    expect(browser.tabs.onActivated.addListener).toHaveBeenCalled();
+    expect(browser.tabs.onUpdated.addListener).toHaveBeenCalled();
+    expect(browser.tabs.onCreated.addListener).toHaveBeenCalled();
+    expect(browser.runtime.onMessage.addListener).toHaveBeenCalled();
+    expect(browser.alarms.create).toHaveBeenCalledWith("checkForInactiveTabs", { periodInMinutes: 5 });
+    expect(browser.declarativeNetRequest.updateDynamicRules).toHaveBeenCalledWith({
+      addRules: expect.arrayContaining([
+        expect.objectContaining({
+          id: 1,
+          priority: 1,
+          action: { type: 'block' },
+          condition: { urlFilter: 'https://example.com/*' }
+        })
+      ]),
+      removeRuleIds: []
     });
   });
 
-  test("should handle runtime messages correctly", async () => {
-    // Initialize background first
-    await background.initBackground(mockBrowser);
+  test("should initialize default settings on installation", async () => {
+    expect(handlers.installed).toBeDefined();
+    await handlers.installed();
+    expect(browser.storage.sync.set).toHaveBeenCalledWith({
+      inactiveThreshold: 60,
+      tabLimit: 100,
+      rules: [],
+    });
+  });
+
+  test("should handle runtime errors correctly", async () => {
+    expect(handlers.error).toBeDefined();
+    const testError = new Error(`Failed to handle tab ${mockTab.id}`);
+    handlers.error(testError);
+    expect(console.error).toHaveBeenCalledWith('Runtime error:', testError);
+  });
+
+  test("should update tab activity on tab events", async () => {
+    // Reset the dispatch mock to clear any initialization calls
+    store.dispatch.mockClear();
     
+    expect(handlers.activated).toBeDefined();
+    await handlers.activated({ tabId: mockTab.id });
+    
+    expect(store.dispatch).toHaveBeenCalledWith({
+      type: 'UPDATE_TAB_ACTIVITY',
+      tabId: mockTab.id,
+      timestamp: expect.any(Number)
+    });
+  });
+
+  test("should handle message passing correctly", async () => {
+    expect(handlers.message).toBeDefined();
     const sendResponse = jest.fn();
-    const sender = { url: 'https://test.com' }; // Add mock sender
-
-    // Get the actual listener function that was registered
-    const messageListener = mockBrowser.runtime.onMessage.addListener.mock.calls[0][0];
-    expect(messageListener).toBeDefined();
-
-    await messageListener({ action: 'GET_STATE' }, sender, sendResponse);
-    expect(sendResponse).toHaveBeenCalledWith({ state: store.getState() });
-
-    await messageListener({ action: 'DISPATCH_ACTION', payload: { type: 'TEST_ACTION' } }, sender, sendResponse);
-    expect(store.dispatch).toHaveBeenCalledWith({ type: 'TEST_ACTION' });
-    expect(sendResponse).toHaveBeenCalledWith({ success: true });
+    await handlers.message(
+      { action: 'getState' }, 
+      { id: 'test-sender' }, 
+      sendResponse
+    );
+    expect(sendResponse).toHaveBeenCalledWith({
+      state: expect.objectContaining({
+        tabActivity: {},
+        archivedTabs: {},
+        isTaggingPromptActive: false
+      })
+    });
   });
 });

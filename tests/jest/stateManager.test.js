@@ -1,13 +1,26 @@
 // tests/jest/stateManager.test.js
 
 const browser = require('webextension-polyfill');
-
-// Import modules that use the mock
-const { store, getIsTaggingPromptActive, getArchivedTabs, getTabActivity, 
-        getActionHistory, getSavedSessions, setIsTaggingPromptActive, 
-        updateTabActivity, archiveTab, undoLastAction, 
-        initializeStateFromStorage } = require('../../src/utils/stateManager.js');
+const { 
+  store, 
+  initializeStateFromStorage, 
+  updateRulesHandler,
+  saveSessionHandler,
+  restoreSessionHandler,
+  getSessions,
+  deleteSessionHandler,
+  getIsTaggingPromptActive, 
+  getArchivedTabs, 
+  getTabActivity, 
+  getActionHistory, 
+  getSavedSessions, 
+  setIsTaggingPromptActive, 
+  updateTabActivity, 
+  archiveTab, 
+  undoLastAction 
+} = require('../../src/utils/stateManager.js');
 const { createBulkTabs, createComplexTabs } = require('./utils/testUtils');
+const { handleMessage, initializeConnection, sendMessage } = require('../../src/utils/messagingUtils.js');
 
 describe("State Manager", () => {
   beforeEach(async () => {
@@ -42,8 +55,9 @@ describe("State Manager", () => {
 
   test("should handle UPDATE_TAB_ACTIVITY action", () => {
     const timestamp = Date.now();
-    store.dispatch({ type: 'UPDATE_TAB_ACTIVITY', tabId: 1, timestamp });
-    expect(store.getState().tabActivity[1]).toBe(timestamp);
+    const tabId = 1;
+    store.dispatch({ type: 'UPDATE_TAB_ACTIVITY', tabId, timestamp });
+    expect(store.getState().tabActivity[tabId]).toBe(timestamp);
 
     // Test multiple updates
     const newTimestamp = timestamp + 1000;
@@ -275,5 +289,57 @@ describe("State Manager", () => {
     const state = store.getState();
     expect(state.archivedTabs).toEqual({
       Work: [{ title: 'Predefined Tab', url: 'https://predefined.com' }]    });
+  });
+
+  describe('Session Management', () => {
+    test('should save session', async () => {
+      browser.tabs.query.mockResolvedValue([
+        { title: 'Test Tab', url: 'https://example.com' }
+      ]);
+
+      await saveSessionHandler('test-session', browser);
+      
+      expect(store.getState().savedSessions['test-session']).toBeDefined();
+      expect(browser.storage.sync.set).toHaveBeenCalled();
+    });
+
+    // ...add more session tests...
+  });
+
+  describe("Messaging Integration", () => {
+    beforeEach(() => {
+      browser.runtime.connect = jest.fn().mockReturnValue({
+        onMessage: { addListener: jest.fn() },
+        onDisconnect: { addListener: jest.fn() },
+        postMessage: jest.fn()
+      });
+    });
+
+    test('should initialize messaging connection', () => {
+      initializeConnection(jest.fn());
+      expect(browser.runtime.connect).toHaveBeenCalledWith({ name: 'content-connection' });
+    });
+
+    test('should handle state-related messages correctly', async () => {
+      const mockStore = { getState: jest.fn(), dispatch: jest.fn() };
+      const mockMessage = { action: 'getState' };
+      const mockSendResponse = jest.fn();
+
+      await handleMessage(mockMessage, {}, mockSendResponse, browser, mockStore);
+      expect(mockSendResponse).toHaveBeenCalled();
+      expect(mockStore.getState).toHaveBeenCalled();
+    });
+
+    test('should handle dispatch actions', async () => {
+      const mockMessage = { 
+        action: 'DISPATCH_ACTION',
+        payload: { type: 'SET_TAGGING_PROMPT_ACTIVE', value: true }
+      };
+      const mockSendResponse = jest.fn();
+
+      await handleMessage(mockMessage, {}, mockSendResponse, browser, store);
+      expect(store.getState().isTaggingPromptActive).toBe(true);
+      expect(mockSendResponse).toHaveBeenCalledWith({ success: true });
+    });
   });
 });

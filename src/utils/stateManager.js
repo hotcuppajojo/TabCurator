@@ -1,7 +1,6 @@
 // src/utils/stateManager.js
 /**
- * @fileoverview State management module for TabCurator.
- * Provides shared state and utilities to manage state across the extension.
+ * @fileoverview Unified state and session management.
  */
 
 // Use require instead of import for better compatibility with Jest
@@ -38,7 +37,10 @@ function rootReducer(state = initialState, action) {
     case 'UPDATE_TAB_ACTIVITY':
       return {
         ...state,
-        tabActivity: { ...state.tabActivity, [action.tabId]: action.timestamp },
+        tabActivity: {
+          ...state.tabActivity,
+          [action.tabId]: action.timestamp,
+        },
       };
 
     case 'ARCHIVE_TAB': {
@@ -87,6 +89,27 @@ function rootReducer(state = initialState, action) {
         archivedTabs: action.archivedTabs,
         // Add other state slices if necessary
       };
+
+    case 'SAVE_SESSION':
+      return {
+        ...state,
+        savedSessions: {
+          ...state.savedSessions,
+          [action.sessionName]: action.sessionTabs
+        }
+      };
+
+    case 'DELETE_SESSION': {
+      const updatedSessions = { ...state.savedSessions };
+      delete updatedSessions[action.sessionName];
+      return {
+        ...state,
+        savedSessions: updatedSessions
+      };
+    }
+    
+    case 'UPDATE_RULES':
+      return { ...state, rules: action.rules };
 
     default:
       // Don't warn for test actions
@@ -241,10 +264,7 @@ export function undoLastAction() {
 export async function initializeStateFromStorage() {
   try {
     const data = await browser.storage.sync.get(['archivedTabs']);
-    
-    // Handle both undefined and null cases
     const archivedTabs = data.archivedTabs || {};
-    
     store.dispatch({
       type: 'INITIALIZE_STATE',
       archivedTabs: archivedTabs,
@@ -255,5 +275,80 @@ export async function initializeStateFromStorage() {
       type: 'INITIALIZE_STATE',
       archivedTabs: {},
     });
+  }
+}
+
+/**
+ * Updates rules in storage and state.
+ * @param {Array} rules - Array of rule objects to update.
+ * @param {object} browserInstance - Browser API instance.
+ */
+export async function updateRulesHandler(rules, browserInstance) {
+  try {
+    store.dispatch({ type: 'UPDATE_RULES', rules });
+    await browserInstance.storage.sync.set({ rules });
+    console.log("Rules updated successfully.");
+  } catch (error) {
+    console.error("Error updating rules:", error);
+  }
+}
+
+// Add session management functions
+export async function saveSessionHandler(sessionName, browserInstance) {
+  try {
+    const tabs = await browserInstance.tabs.query({ currentWindow: true });
+    const sessionTabs = tabs.map(({ title, url }) => ({ title, url }));
+    store.dispatch({ type: 'SAVE_SESSION', sessionName, sessionTabs });
+    await browserInstance.storage.sync.set({ 
+      savedSessions: store.getState().savedSessions 
+    });
+    console.log(`Session '${sessionName}' saved with ${sessionTabs.length} tabs.`);
+  } catch (error) {
+    console.error(`Error saving session '${sessionName}':`, error);
+    throw error;
+  }
+}
+
+export async function restoreSessionHandler(sessionName, browserInstance) {
+  const sessionTabs = store.getState().savedSessions[sessionName];
+  if (!sessionTabs) {
+    throw new Error(`Session '${sessionName}' not found`);
+  }
+
+  try {
+    for (const tab of sessionTabs) {
+      await browserInstance.tabs.create({ url: tab.url });
+    }
+    console.log(`Session '${sessionName}' restored successfully.`);
+  } catch (error) {
+    console.error(`Error restoring session '${sessionName}':`, error);
+    throw error;
+  }
+}
+
+export async function getSessions(browserInstance) {
+  try {
+    const data = await browserInstance.storage.sync.get('savedSessions');
+    return data.savedSessions || store.getState().savedSessions || {};
+  } catch (error) {
+    console.error("Error retrieving sessions:", error);
+    return {};
+  }
+}
+
+export async function deleteSessionHandler(sessionName, browserInstance) {
+  try {
+    const sessions = await getSessions(browserInstance);
+    if (!sessions[sessionName]) {
+      throw new Error(`Session '${sessionName}' not found`);
+    }
+
+    delete sessions[sessionName];
+    await browserInstance.storage.sync.set({ savedSessions: sessions });
+    store.dispatch({ type: 'DELETE_SESSION', sessionName });
+    console.log(`Session '${sessionName}' deleted.`);
+  } catch (error) {
+    console.error(`Error deleting session '${sessionName}':`, error);
+    throw error;
   }
 }

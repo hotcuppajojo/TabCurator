@@ -4,15 +4,21 @@
 const browser = require('webextension-polyfill');
 
 // Import after browser mock is set up
-const { tagTab, archiveTab } = require('../../src/utils/tagUtils.js');
-const { getTab, updateTab, removeTab } = require('../../src/utils/tabUtils.js');
+const { tagTab, archiveTab, applyRulesToTab } = require('../../src/utils/tagUtils.js');
+const { getTab, updateTab, removeTab } = require('../../src/utils/tabManager.js');
 
-// Mock the tabUtils module
-jest.mock('../../src/utils/tabUtils.js');
+// Mock the tabManager module
+jest.mock('../../src/utils/tabManager.js');
 
 // Mock the stateManager module since it's imported by tagUtils
 jest.mock('../../src/utils/stateManager.js', () => ({
   state: {},
+  store: {
+    getState: jest.fn(() => ({
+      archivedTabs: {}
+    })),
+    dispatch: jest.fn()
+  }
 }));
 
 const { createMockTab, createTaggedTab, createComplexTabs, createBulkTabs } = require('./utils/testUtils');
@@ -73,10 +79,12 @@ describe("Tag Utils", () => {
       await archiveTab(tabId, tag, archivedTabs);
 
       expect(getTab).toHaveBeenCalledWith(tabId);
-      expect(archivedTabs[tag]).toContainEqual({
+      expect(archivedTabs[tag][0]).toMatchObject({
         title: tab.title,
         url: tab.url
       });
+      expect(archivedTabs[tag][0]).toHaveProperty('timestamp');
+      expect(typeof archivedTabs[tag][0].timestamp).toBe('number');
       expect(removeTab).toHaveBeenCalledWith(tabId);
       expect(console.error).not.toHaveBeenCalled();
     });
@@ -142,10 +150,12 @@ describe("Tag Utils", () => {
       await tagTab(tabId, tag);
       await archiveTab(tabId, tag, archivedTabs);
       
-      expect(archivedTabs[tag]).toContainEqual({
+      expect(archivedTabs[tag][0]).toMatchObject({
         title: `[${tag}] Test Tab`,
         url: 'https://example.com'
       });
+      expect(archivedTabs[tag][0]).toHaveProperty('timestamp');
+      expect(typeof archivedTabs[tag][0].timestamp).toBe('number');
     });
   });
 
@@ -180,6 +190,109 @@ describe("Tag Utils", () => {
       }
 
       expect(archivedTabs['BulkTag']).toHaveLength(100);
+    });
+  });
+
+  describe('Service Worker Compatibility', () => {
+    test('should handle service worker termination gracefully', async () => {
+      const error = new Error('Extension context invalidated');
+      getTab.mockRejectedValueOnce(error);
+      
+      await expect(tagTab(1, 'Important')).rejects.toThrow(error);
+      expect(console.error).toHaveBeenCalledWith('Failed to tag tab 1:', error);
+    });
+
+    test('should perform operations within service worker time limits', async () => {
+      const tabs = createBulkTabs(50);
+      const start = Date.now();
+      
+      for (const tab of tabs) {
+        getTab.mockResolvedValueOnce(tab);
+        await tagTab(tab.id, 'Performance');
+      }
+      
+      const duration = Date.now() - start;
+      expect(duration).toBeLessThan(1000); // Operations should complete within 1 second
+    });
+  });
+
+  describe('Declarative Pattern Tests', () => {
+    test('should apply rules declaratively', async () => {
+      const mockStore = {
+        getState: jest.fn(() => ({ archivedTabs: {} })),
+        dispatch: jest.fn()
+      };
+
+      const mockBrowser = {
+        storage: {
+          sync: {
+            get: jest.fn().mockResolvedValue({
+              rules: [{
+                condition: 'example.com',
+                action: 'Tag: Work'
+              }]
+            })
+          }
+        }
+      };
+
+      const tab = createMockTab(1, { url: 'https://example.com' });
+      await applyRulesToTab(tab, mockBrowser, mockStore);
+
+      expect(mockStore.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'ARCHIVE_TAB'
+        })
+      );
+    });
+
+    test('should handle rule application failures safely', async () => {
+      const mockBrowser = {
+        storage: {
+          sync: {
+            get: jest.fn().mockRejectedValue(new Error('Storage error'))
+          }
+        }
+      };
+
+      const tab = createMockTab(1);
+      await applyRulesToTab(tab, mockBrowser, {});
+      
+      expect(console.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('Error Handling and Recovery', () => {
+    test('should handle concurrent operations safely', async () => {
+      const operations = Array.from({ length: 5 }, (_, i) => {
+        getTab.mockResolvedValueOnce(createMockTab(i + 1));
+        return tagTab(i + 1, 'Concurrent');
+      });
+      
+      await expect(Promise.all(operations)).resolves.not.toThrow();
+    });
+
+    test('should validate input thoroughly', async () => {
+      await expect(tagTab(null, 'Test')).rejects.toThrow('Tab ID must be a valid number');
+      await expect(tagTab(1, '')).rejects.toThrow('Tag must be a non-empty string');
+      await expect(tagTab('invalid', 'Test')).rejects.toThrow('Tab ID must be a valid number');
+    });
+  });
+
+  describe('Performance Optimization', () => {
+    test('should handle large batch operations efficiently', async () => {
+      const archivedTabs = {};
+      const tabs = createBulkTabs(100);
+      const start = performance.now();
+      
+      for (const tab of tabs) {
+        getTab.mockResolvedValueOnce(tab);
+        await archiveTab(tab.id, 'Batch', archivedTabs);
+      }
+      
+      const duration = performance.now() - start;
+      expect(duration).toBeLessThan(2000); // Should process 100 tabs within 2 seconds
+      expect(archivedTabs['Batch']).toHaveLength(100);
     });
   });
 });

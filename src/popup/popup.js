@@ -5,7 +5,7 @@
  * Ensures cross-browser compatibility with Manifest V3 compliance.
  */
 import browser from 'webextension-polyfill';
-import { queryTabs, getTab } from '../utils/tabUtils.js';
+import { queryTabs, getTab } from '../utils/tabManager.js';
 
 /**
  * Initializes the popup controller for TabCurator.

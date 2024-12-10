@@ -8,7 +8,7 @@ module.exports = {
   // Isolates test files from source code for cleaner architecture
   roots: ["<rootDir>/tests"],
   // Enforces consistent test naming for automated discovery
-  testMatch: ["<rootDir>/tests/jest/*.test.js"],
+  testMatch: ["<rootDir>/tests/jest/**/*.test.js"],
   transform: {
     // Enables modern JS features while maintaining compatibility
     '^.+\\.js$': ['babel-jest', { configFile: './babel.config.cjs' }],
@@ -25,11 +25,16 @@ module.exports = {
   
   // Ensure moduleNameMapper correctly points to the mocked browser
   moduleNameMapper: {
-    '^webextension-polyfill$': '<rootDir>/tests/jest/mocks/browserMock.js'
+    '^webextension-polyfill$': '<rootDir>/tests/jest/mocks/browserMock.js',
+    '^@utils/(.*)$': '<rootDir>/src/utils/$1',
+    '^.*\\.css$': 'identity-obj-proxy', // Example for handling CSS imports
   },
   
   // Ensure proper order of setup files
   setupFilesAfterEnv: [
     "<rootDir>/jest.setup.js"
   ],
+
+  // Add moduleDirectories to help resolve imports
+  moduleDirectories: ['node_modules', 'src'],
 };
