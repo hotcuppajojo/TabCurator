@@ -222,7 +222,10 @@ const background = {
       // Add null checks for runtime.onMessage
       if (browserInstance.runtime.onMessage && browserInstance.runtime.onMessage.addListener) {
         browserInstance.runtime.onMessage.addListener((message, sender, sendResponse) => {
-          handleMessage(message, sender, sendResponse, browser, store);
+          handleMessage(message, sender, sendResponse, browserInstance, store).catch(error => {
+            console.error('Error handling message:', error);
+            sendResponse({ error: error.message });
+          });
           return true;
         });
       } else {
@@ -239,19 +242,31 @@ const background = {
         console.warn("tabs.onActivated.addListener is not available.");
       }
 
-      // Use the alarms functions from messagingUtils
-      createAlarm('checkForInactiveTabs', { periodInMinutes: 5 }, browserInstance);
-
-      onAlarm(async (alarm) => {
-        if (alarm.name === 'checkForInactiveTabs') {
-          await this.checkForInactiveTabs(browserInstance);
-        }
-      }, browserInstance);
-
+      // Set up alarm handling with configurable period
       try {
+        const settings = await browserInstance.storage.sync.get(['inactiveCheckPeriod']);
+        const period = settings.inactiveCheckPeriod || 5; // Default to 5 minutes if not set
+        
+        createAlarm('checkForInactiveTabs', { periodInMinutes: period }, browserInstance);
+        
+        onAlarm(async (alarm) => {
+          if (alarm.name === 'checkForInactiveTabs') {
+            await this.checkForInactiveTabs(browserInstance);
+          }
+        }, browserInstance);
+
+        // Listen for settings changes
+        browserInstance.storage.onChanged.addListener((changes) => {
+          if (changes.inactiveCheckPeriod) {
+            createAlarm('checkForInactiveTabs', { 
+              periodInMinutes: changes.inactiveCheckPeriod.newValue 
+            }, browserInstance);
+          }
+        });
+
         await this.checkForInactiveTabs(browserInstance);
       } catch (error) {
-        console.error("Initial inactive tab check failed:", error);
+        console.error("Error setting up alarms:", error);
       }
 
       // Add null checks for runtime.onConnect
@@ -277,7 +292,6 @@ const background = {
                   return;
                 }
 
-                console.log('Message from content script:', message);
                 switch (message.action) {
                   case "saveSession":
                   case "SAVE_SESSION":
@@ -325,6 +339,16 @@ const background = {
                   case "DISPATCH_ACTION":
                     store.dispatch(message.payload);
                     port.postMessage({ success: true });
+                    break;
+
+                  case "getTab":
+                    const tab = await getTab(message.tabId);
+                    port.postMessage({ success: true, tab });
+                    break;
+
+                  case "suspendTab":
+                    const suspendedTab = await suspendTab(message.tabId);
+                    port.postMessage({ success: true, tab: suspendedTab });
                     break;
 
                   case "createTab":

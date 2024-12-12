@@ -1,5 +1,21 @@
 const mockBrowser = require('./tests/jest/mocks/browserMock.js');
 
+// Add Request to global scope
+global.Request = class Request {
+  constructor(url, options = {}) {
+    this.url = url;
+    this.options = options;
+  }
+};
+
+// Add Response to global scope
+global.Response = class Response {
+  constructor(body, options = {}) {
+    this.body = body;
+    this.options = options;
+  }
+};
+
 // Initialize browser mock
 global.browser = mockBrowser;
 

@@ -5,6 +5,9 @@ const createMockFn = (implementation) => {
   return jest.fn(implementation);
 };
 
+// Define listeners array at the top level
+const alarmsOnAlarmListeners = [];
+
 const createMockPort = () => ({
   name: 'mockPort',
   onMessage: {
@@ -84,13 +87,19 @@ const mockBrowser = {
       { id: 1, title: 'Tab 1', url: 'https://example.com', active: false },
       { id: 2, title: 'Tab 2', url: 'https://example2.com', active: true }
     ])),
-    get: createMockFn(() => Promise.resolve({
-      id: 1,
+    get: createMockFn((tabId) => Promise.resolve({
+      id: tabId,
       url: 'https://example.com',
-      title: 'Test Tab'
+      title: 'Test Tab',
+      active: false,
+      discarded: false
     })),
     create: createMockFn(createProperties => Promise.resolve({ id: Date.now(), ...createProperties })),
-    update: createMockFn((tabId, updateProperties) => Promise.resolve({ id: tabId, ...updateProperties })),
+    update: createMockFn((tabId, updateProperties) => Promise.resolve({
+      id: tabId,
+      ...updateProperties,
+      discarded: updateProperties.autoDiscardable === true
+    })),
     remove: createMockFn(() => Promise.resolve()),
     discard: createMockFn(tabId => Promise.resolve({ id: tabId, discarded: true }))
   },
@@ -107,7 +116,12 @@ const mockBrowser = {
           alarmsOnAlarmListeners.splice(index, 1);
         }
       }),
-    },
+      trigger: createMockFn(async (alarm) => {
+        for (const listener of alarmsOnAlarmListeners) {
+          await listener(alarm);
+        }
+      }),
+    }
   },
   storage: {
     sync: {
@@ -165,6 +179,9 @@ const mockBrowser = {
       tabLimit: 100,
       rules: []
     };
+    
+    // Clear alarm listeners
+    alarmsOnAlarmListeners.length = 0;
     
     // Reset global.self.listeners if needed
     if (global.self && global.self.listeners) {

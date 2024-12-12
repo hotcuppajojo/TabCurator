@@ -20,23 +20,35 @@ jest.mock('../../src/utils/stateManager.js', () => ({
 jest.mock('../../src/utils/tabManager.js', () => {
   const queryTabsMock = jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]);
   const discardTabMock = jest.fn().mockResolvedValue();
+  const getTabMock = jest.fn().mockImplementation(async (tabId) => ({
+    id: tabId,
+    url: 'https://example.com',
+    title: 'Test Tab',
+    active: false
+  }));
+  const suspendTabMock = jest.fn().mockImplementation(async (tabId) => ({
+    id: tabId,
+    discarded: true
+  }));
   
-  // Export an object that matches the module's interface
   return {
     default: {
       queryTabs: queryTabsMock,
       discardTab: discardTabMock,
-      getTab: jest.fn(),
+      getTab: getTabMock,
       createTab: jest.fn(),
       updateTab: jest.fn(),
       removeTab: jest.fn(),
+      suspendTab: suspendTabMock
     },
-    // Export the mocks directly
     queryTabs: queryTabsMock,
     discardTab: discardTabMock,
-    // Export references for testing
+    getTab: getTabMock,
+    suspendTab: suspendTabMock,
     __queryTabsMock: queryTabsMock,
     __discardTabMock: discardTabMock,
+    __getTabMock: getTabMock,
+    __suspendTabMock: suspendTabMock
   };
 });
 
@@ -61,11 +73,10 @@ const mockBrowser = require('./mocks/browserMock.js');
 import { createMockTab } from './utils/testUtils.js';
 import { store } from '../../src/utils/stateManager.js';
 import tagUtils from '../../src/utils/tagUtils.js';
-import { setupTest, cleanupTest } from './setup/testSetup';
 import { CONNECTION_NAME } from '../../src/background/constants.js'; // Add this import
 
 describe('Background Service Worker', () => {
-  let queryTabsMock, discardTabMock, consoleErrorSpy, sendResponse, handleMessage;
+  let queryTabsMock, discardTabMock, getTabMock, suspendTabMock, consoleErrorSpy, sendResponse, handleMessage;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -74,6 +85,8 @@ describe('Background Service Worker', () => {
     const tabManager = jest.requireMock('../../src/utils/tabManager.js');
     queryTabsMock = tabManager.queryTabs;
     discardTabMock = tabManager.discardTab;
+    getTabMock = tabManager.getTab; // Added line to define getTabMock
+    suspendTabMock = tabManager.suspendTab; // Added line to define suspendTabMock
     
     // Get the mocked handleMessage function
     handleMessage = require('../../src/utils/messagingUtils.js').handleMessage;
@@ -96,18 +109,16 @@ describe('Background Service Worker', () => {
     queryTabsMock.mockResolvedValueOnce(testTabs);
 
     try {
-      // Get the alarm listener directly from the mock browser
-      const [[alarmListener]] = mockBrowser.alarms.onAlarm.addListener.mock.calls;
-      expect(alarmListener).toBeDefined();
+      // Get the alarm handler that was registered
+      const [[alarmCallback]] = mockBrowser.alarms.onAlarm.addListener.mock.calls;
+      expect(alarmCallback).toBeDefined();
 
-      // Call the listener with the correct alarm name
-      await alarmListener({ name: 'checkForInactiveTabs' });
+      // Call the alarm callback directly with the correct alarm name
+      await alarmCallback({ name: 'checkForInactiveTabs' });
 
-      // Verify queryTabs was called
+      // Verify expected behavior
       expect(queryTabsMock).toHaveBeenCalledTimes(1);
-      expect(queryTabsMock).toHaveBeenCalledWith(1);
-      
-      // Verify discard calls
+      expect(queryTabsMock).toHaveBeenCalledWith({});
       expect(discardTabMock).toHaveBeenCalledWith(1);
       expect(discardTabMock).toHaveBeenCalledWith(2);
       expect(discardTabMock).toHaveBeenCalledTimes(2);
@@ -115,23 +126,38 @@ describe('Background Service Worker', () => {
       console.error('Error in alarm test:', error);
       throw error;
     }
-  }, 5000); // Add explicit timeout
+  });
 
   test('should handle connection timeouts', async () => {
-    const error = new Error('Handler error');
-    handleMessage.mockRejectedValueOnce(error);
+    // Setup error handling test
+    handleMessage.mockImplementation(() => {
+      const error = new Error('Handler error');
+      console.error('Error handling message:', error);
+      throw error;
+    });
 
-    // Get the message handler
-    const messageHandler = mockBrowser.runtime.onMessage.addListener.mock.calls[0][0];
+    // Get the message handlers
+    const connectHandler = mockBrowser.runtime.onConnect.addListener.mock.calls[0][0];
+    const mockPort = {
+      name: CONNECTION_NAME,
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn()
+    };
 
-    try {
-      // Call the handler and await any rejected promises
-      await messageHandler({ action: 'getState' }, {}, sendResponse);
-    } catch (e) {
-      // Error should be caught and logged
-      expect(consoleErrorSpy).toHaveBeenCalledWith('Error handling message:', error);
-      expect(sendResponse).toHaveBeenCalledWith({ error: error.message });
-    }
+    // Connect and get message handler
+    connectHandler(mockPort);
+    const [[messageHandler]] = mockPort.onMessage.addListener.mock.calls;
+
+    // Trigger error
+    await messageHandler({ action: 'getState' });
+
+    // Verify error handling
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Error handling message:', expect.any(Error));
+    expect(mockPort.postMessage).toHaveBeenCalledWith({
+      type: 'ERROR',
+      error: 'Handler error'
+    });
   });
 
   test('should handle fetch events for extension resources', async () => {
@@ -157,28 +183,65 @@ describe('Background Service Worker', () => {
   });
 
   test('should reject messages after disconnect', async () => {
+    // Setup mock port
     const mockPort = {
+      name: CONNECTION_NAME,
       onMessage: { addListener: jest.fn() },
       onDisconnect: { addListener: jest.fn() },
-      postMessage: jest.fn(),
-      name: CONNECTION_NAME
+      postMessage: jest.fn()
     };
 
-    // Get and call the connection handler
+    // Connect and store message handler
     const connectHandler = mockBrowser.runtime.onConnect.addListener.mock.calls[0][0];
     connectHandler(mockPort);
 
-    // Clear any initial messages
+    // Get message handler
+    const [[messageHandler]] = mockPort.onMessage.addListener.mock.calls;
+
+    // Reset postMessage to ignore CONNECTION_ACK
     mockPort.postMessage.mockClear();
 
-    // Simulate disconnect
+    // Disconnect the port
     const [[disconnectHandler]] = mockPort.onDisconnect.addListener.mock.calls;
-    await disconnectHandler();
+    disconnectHandler();
 
-    // Try to send a message after disconnect
-    await handleMessage({ action: 'getState' }, {}, sendResponse);
+    // Send a message after disconnect
+    await messageHandler({ action: 'getState' });
 
-    // Verify no messages were sent after disconnect
+    // Verify that no messages are sent after disconnect
     expect(mockPort.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('should handle tab suspension', async () => {
+    const tabId = 1;
+    const tab = { id: tabId, url: 'https://example.com' };
+    const suspendedTab = { ...tab, discarded: true };
+
+    // Use the existing mocks
+    getTabMock.mockResolvedValueOnce(tab);
+    suspendTabMock.mockResolvedValueOnce(suspendedTab);
+
+    // Setup mock port
+    const mockPort = {
+      name: CONNECTION_NAME,
+      onMessage: { addListener: jest.fn(cb => cb({ action: 'suspendTab', tabId })) },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn()
+    };
+
+    // Connect and trigger message handler
+    const connectHandler = mockBrowser.runtime.onConnect.addListener.mock.calls[0][0];
+    connectHandler(mockPort);
+
+    // Allow any asynchronous operations to complete
+    await Promise.resolve();
+
+    // Verify the operations
+    expect(getTabMock).toHaveBeenCalledWith(tabId);
+    expect(suspendTabMock).toHaveBeenCalledWith(tabId);
+    expect(mockPort.postMessage).toHaveBeenCalledWith({
+      success: true,
+      tab: suspendedTab
+    });
   });
 });

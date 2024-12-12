@@ -63,6 +63,10 @@ const actionHandlers = {
   'DISPATCH_ACTION': (message, sender, sendResponse, browserInstance, store) => {
     store.dispatch(message.payload);
     sendResponse({ success: true });
+  },
+  'updateSettings': async (message, sender, sendResponse, browserInstance) => {
+    await updateSettings(message.settings, browserInstance);
+    sendResponse({ success: true });
   }
 };
 
