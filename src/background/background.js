@@ -30,7 +30,9 @@ import {
 import { 
   handleMessage, 
   initializeConnection, 
-  sendMessage 
+  sendMessage,
+  createAlarm,
+  onAlarm
 } from '../utils/messagingUtils.js';
 
 import { archiveTab, applyRulesToTab } from '../utils/tagUtils.js';
@@ -237,35 +239,14 @@ const background = {
         console.warn("tabs.onActivated.addListener is not available.");
       }
 
-      // Add null checks for alarms
-      if (browserInstance.alarms) {
-        browserInstance.alarms.create("checkForInactiveTabs", { periodInMinutes: 5 });
-        if (browserInstance.alarms.onAlarm && browserInstance.alarms.onAlarm.addListener) {
-          browserInstance.alarms.onAlarm.addListener(async (alarm) => {
-            if (alarm.name === "checkForInactiveTabs") {
-              await this.checkForInactiveTabs(browserInstance);
-            }
-          });
-        } else {
-          console.warn("alarms.onAlarm.addListener is not available.");
+      // Use the alarms functions from messagingUtils
+      createAlarm('checkForInactiveTabs', { periodInMinutes: 5 }, browserInstance);
+
+      onAlarm(async (alarm) => {
+        if (alarm.name === 'checkForInactiveTabs') {
+          await this.checkForInactiveTabs(browserInstance);
         }
-      } else {
-        console.warn("alarms API is not available.");
-      }
-
-      // Bind the checkForInactiveTabs method to maintain 'this' context
-      const boundCheckForInactiveTabs = this.checkForInactiveTabs.bind(this);
-
-      // Set up the alarm handler with the correct context
-      if (browserInstance.alarms && browserInstance.alarms.onAlarm && browserInstance.alarms.onAlarm.addListener) {
-        browserInstance.alarms.onAlarm.addListener(async (alarm) => {
-          if (alarm.name === "checkForInactiveTabs") {
-            await boundCheckForInactiveTabs(browserInstance);
-          }
-        });
-      } else {
-        console.warn("alarms.onAlarm.addListener is not available.");
-      }
+      }, browserInstance);
 
       try {
         await this.checkForInactiveTabs(browserInstance);

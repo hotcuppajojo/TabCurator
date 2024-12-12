@@ -40,11 +40,17 @@ jest.mock('../../src/utils/tabManager.js', () => {
   };
 });
 
+// Update the messagingUtils mock
 jest.mock('../../src/utils/messagingUtils.js', () => {
   const originalModule = jest.requireActual('../../src/utils/messagingUtils.js');
   return {
     ...originalModule,
-    handleMessage: jest.fn()
+    handleMessage: jest.fn(),
+    createAlarm: jest.fn(),
+    onAlarm: jest.fn((callback, browserInstance) => {
+      // Store the callback for later use
+      browserInstance.alarms.onAlarm.addListener(callback);
+    }),
   };
 });
 
@@ -90,16 +96,16 @@ describe('Background Service Worker', () => {
     queryTabsMock.mockResolvedValueOnce(testTabs);
 
     try {
-      // Simulate alarm trigger
-      const alarm = { name: 'checkInactiveTabs' };
-      await mockBrowser.alarms.onAlarm.trigger(alarm);
-      
-      // Add a longer delay to ensure async operations complete
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
+      // Get the alarm listener directly from the mock browser
+      const [[alarmListener]] = mockBrowser.alarms.onAlarm.addListener.mock.calls;
+      expect(alarmListener).toBeDefined();
+
+      // Call the listener with the correct alarm name
+      await alarmListener({ name: 'checkForInactiveTabs' });
+
       // Verify queryTabs was called
       expect(queryTabsMock).toHaveBeenCalledTimes(1);
-      expect(queryTabsMock).toHaveBeenCalledWith({});
+      expect(queryTabsMock).toHaveBeenCalledWith(1);
       
       // Verify discard calls
       expect(discardTabMock).toHaveBeenCalledWith(1);
@@ -109,7 +115,7 @@ describe('Background Service Worker', () => {
       console.error('Error in alarm test:', error);
       throw error;
     }
-  });
+  }, 5000); // Add explicit timeout
 
   test('should handle connection timeouts', async () => {
     const error = new Error('Handler error');

@@ -206,3 +206,11 @@ export async function handleMessage(message, sender, sendResponse, browserInstan
     sendResponse({ error: error.message });
   }
 }
+
+export const createAlarm = (name, alarmInfo, browserInstance) => {
+  browserInstance.alarms.create(name, alarmInfo);
+};
+
+export const onAlarm = (callback, browserInstance) => {
+  browserInstance.alarms.onAlarm.addListener(callback);
+};

@@ -1,13 +1,8 @@
 // tests/jest/mocks/browserMock.js
 
-// Add Jest type checking and safe mock creation
-const isTesting = typeof jest !== 'undefined';
-
+// Remove jest import and use global jest
 const createMockFn = (implementation) => {
-  if (isTesting) {
-    return jest.fn(implementation);
-  }
-  return (...args) => implementation ? implementation(...args) : undefined;
+  return jest.fn(implementation);
 };
 
 const createMockPort = () => ({
@@ -99,17 +94,21 @@ const mockBrowser = {
     remove: createMockFn(() => Promise.resolve()),
     discard: createMockFn(tabId => Promise.resolve({ id: tabId, discarded: true }))
   },
-  alarms: (() => {
-    const listeners = new Set();
-    return {
-      create: createMockFn(),
-      get: createMockFn(),
-      getAll: createMockFn(() => Promise.resolve([])),
-      clear: createMockFn(() => Promise.resolve(true)),
-      clearAll: createMockFn(() => Promise.resolve(undefined)),
-      onAlarm: createMockListener()  // Use the existing createMockListener function
-    };
-  })(),
+  alarms: {
+    create: createMockFn(),
+    clearAll: createMockFn(),
+    onAlarm: {
+      addListener: createMockFn((listener) => {
+        alarmsOnAlarmListeners.push(listener);
+      }),
+      removeListener: createMockFn((listener) => {
+        const index = alarmsOnAlarmListeners.indexOf(listener);
+        if (index > -1) {
+          alarmsOnAlarmListeners.splice(index, 1);
+        }
+      }),
+    },
+  },
   storage: {
     sync: {
       _data: {

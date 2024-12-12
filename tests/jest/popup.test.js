@@ -154,7 +154,7 @@ describe("Popup script", () => {
    * Validates tagging functionality for the oldest tab
    * Tests proper tagging of the oldest tab
    */
-  it("should handle tagging the oldest tab", async () => {
+  test('should handle tagging the oldest tab', async () => {
     // Mock GET_STATE response
     browser.runtime.sendMessage
       .mockResolvedValueOnce({ state: { oldestTabId: 1 } }) // For GET_STATE
@@ -168,8 +168,8 @@ describe("Popup script", () => {
     const tagButton = document.getElementById("tag-oldest-tab");
     tagButton.click();
 
-    // Wait for all promises to resolve
-    await new Promise(resolve => setImmediate(resolve));
+    // Use setTimeout instead of setImmediate
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(browser.tabs.get).toHaveBeenCalledWith(1);
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
@@ -187,7 +187,7 @@ describe("Popup script", () => {
    * Validates archive tab button functionality
    * Tests proper archiving of the current tab
    */
-  it("should handle click event for archive tab button", async () => {
+  test('should handle click event for archive tab button', async () => {
     const archiveButton = document.getElementById("archiveTabButton");
     
     // Mock tabs.get response for getting current tab
@@ -199,8 +199,8 @@ describe("Popup script", () => {
 
     archiveButton.click();
 
-    // Wait for all promises to resolve
-    await new Promise(resolve => setImmediate(resolve));
+    // Use setTimeout instead of setImmediate
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
       action: 'archiveTab',
@@ -214,7 +214,7 @@ describe("Popup script", () => {
    * Validates view archived tabs button functionality
    * Tests proper retrieval and display of archived tabs
    */
-  it("should handle click event for view archived tabs button", async () => {
+  test('should handle click event for view archived tabs button', async () => {
     const viewArchivesButton = document.getElementById("viewArchivesButton");
 
     // Setup mock response before click
@@ -227,8 +227,8 @@ describe("Popup script", () => {
 
     viewArchivesButton.click();
 
-    // Wait for all promises to resolve
-    await new Promise(resolve => setImmediate(resolve));
+    // Use setTimeout instead of setImmediate
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({ 
       action: "getArchivedTabs" 
@@ -239,11 +239,11 @@ describe("Popup script", () => {
    * Validates session management functionality
    * Tests session saving and view operations
    */
-  it("should handle click event for save session button", async () => {
+  test('should handle click event for save session button', async () => {
     const saveSessionButton = document.getElementById("saveSessionButton");
     
     // Reset prompt and message mocks
-    global.prompt.mockReturnValue("Morning Session");
+    global.prompt.mockImplementation(() => "Morning Session");
     browser.runtime.sendMessage.mockResolvedValue({ success: true });
     
     // Initialize event handlers
@@ -267,7 +267,7 @@ describe("Popup script", () => {
    * Validates session viewing functionality
    * Tests retrieval and display of saved sessions
    */
-  it("should handle click event for view sessions button", async () => {
+  test('should handle click event for view sessions button', async () => {
     const viewSessionsButton = document.getElementById("viewSessionsButton");
 
     // Configure mock session data
@@ -280,8 +280,8 @@ describe("Popup script", () => {
 
     viewSessionsButton.click();
 
-    // Wait for all promises to resolve
-    await new Promise(resolve => setImmediate(resolve));
+    // Use setTimeout instead of setImmediate
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({ 
       action: "getSessions" 
