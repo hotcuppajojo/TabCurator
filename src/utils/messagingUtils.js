@@ -33,6 +33,17 @@ let port = null;
 let isConnected = false;
 const messageQueue = [];
 
+// Add connection state tracking
+let connectionAttempts = 0;
+const MAX_CONNECTION_ATTEMPTS = 3;
+const CONNECTION_RETRY_DELAY = 1000;
+const RECONNECT_COOLDOWN = 5000;
+let reconnectTimeout = null;
+
+// Store references to the listener functions
+let messageCallback;
+let disconnectCallback;
+
 /**
  * Mapping of message actions to their corresponding handler functions.
  */
@@ -57,35 +68,52 @@ const actionHandlers = {
 
 export function initializeConnection(messageHandler) {
   try {
+    if (connectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
+      console.warn('Max connection attempts reached, cooling down...');
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = setTimeout(() => {
+        connectionAttempts = 0;
+        initializeConnection(messageHandler);
+      }, RECONNECT_COOLDOWN);
+      return;
+    }
+
+    connectionAttempts++;
     port = browser.runtime.connect({ name: CONNECTION_NAME });
     
-    port.onMessage.addListener(async (message) => {
+    port.onMessage.addListener(messageCallback = async (message) => {
       if (message.type === 'CONNECTION_ACK') {
+        console.log('Connection established successfully');
         isConnected = true;
-        retryCount = 0;
+        connectionAttempts = 0;
         await flushQueue();
       } else {
         await messageHandler(message);
       }
     });
 
-    port.onDisconnect.addListener(() => {
+    port.onDisconnect.addListener(disconnectCallback = () => {
+      console.log('Connection lost, attempting reconnect...');
       isConnected = false;
       port = null;
-      if (retryCount < MAX_RETRIES) {
-        retryCount++;
-        setTimeout(() => initializeConnection(messageHandler), RETRY_DELAY);
-      } else {
-        console.error('Max reconnection attempts reached');
-      }
+      
+      // Retry connection after delay
+      setTimeout(() => {
+        if (!isConnected) {
+          initializeConnection(messageHandler);
+        }
+      }, CONNECTION_RETRY_DELAY);
     });
 
   } catch (error) {
     console.error('Connection failed:', error);
-    if (retryCount < MAX_RETRIES) {
-      retryCount++;
-      setTimeout(() => initializeConnection(messageHandler), RETRY_DELAY);
-    }
+    
+    // Retry connection after delay
+    setTimeout(() => {
+      if (!isConnected) {
+        initializeConnection(messageHandler);
+      }
+    }, CONNECTION_RETRY_DELAY);
   }
 }
 
@@ -122,9 +150,15 @@ async function flushQueue() {
 export function _cleanup() {
   messageQueue.length = 0;
   isConnected = false;
-  port = null;
+  if (port) {
+    port.onMessage.removeListener(messageCallback);
+    port.onDisconnect.removeListener(disconnectCallback);
+    port = null;
+  }
   retryCount = 0;
   isProcessingQueue = false;
+  connectionAttempts = 0;
+  clearTimeout(reconnectTimeout);
 }
 
 async function _sendMessage(message) {

@@ -1,29 +1,37 @@
+// tests/playwright/popup.integration.test.js
+
 import { test, expect } from '@playwright/test';
 import { getExtensionId } from './setup';
 import { injectBrowserMock } from './mocks/browserMock';
 import fs from 'fs';
 import path from 'path';
 
-test.describe('Popup script integration tests', () => {
+test.describe('Popup Integration Tests', () => {
   let browserContext;
   let page;
   let extensionId;
 
   test.beforeEach(async ({ context }) => {
-    const setup = await getExtensionId();
+    const setup = await getExtensionId(); // Changed from getExtensionId(context)
     browserContext = setup.context;
     extensionId = setup.extensionId;
+    
+    // Only assign serviceWorker if it exists
+    // if (setup.serviceWorker) {
+    //   serviceWorker = setup.serviceWorker;
+    //   console.log('Service Worker assigned:', serviceWorker.url());
+    // } else {
+    //   console.warn('No Service Worker available in setup.');
+    // }
 
-    page = await browserContext.newPage();
-
-    // Wait longer for extension to load
-    await page.waitForTimeout(500); // Reduced from 1000ms to 500ms
+    page = await context.newPage();
 
     // Inject browser mock before navigating
     await injectBrowserMock(page);
 
-    // Navigate to popup with extended timeout
-    await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`, {
+    // Ensure popup.html is loaded from build directory
+    const popupUrl = `chrome-extension://${extensionId}/popup/popup.html`;
+    await page.goto(popupUrl, {
       waitUntil: 'networkidle',
       timeout: 30000
     });
@@ -40,12 +48,50 @@ test.describe('Popup script integration tests', () => {
     // Reset mocks after ensuring they exist
     await page.evaluate(() => {
       window.testHelpers.resetMocks();
-      window.browser.runtime.sendMessage.mock = { calls: [] };
+      window.browser.runtime.sendMessage.mock.calls = [];
       window.browser.runtime.sendMessage.shouldFail = false;
     });
 
     // Ensure popup is initialized
     await page.waitForFunction(() => !!window.popupInstance, { timeout: 10000 });
+
+    // Configure enhanced browser mock for MV3
+    await page.evaluate(() => {
+      window.browser = {
+        ...window.browser,
+        runtime: {
+          ...window.browser.runtime,
+          connect: () => ({
+            onDisconnect: { addListener: () => {} },
+            postMessage: () => {}
+          }),
+          sendMessage: async (message) => {
+            if (window.browser.runtime.sendMessage.shouldFail) {
+              window.browser.runtime.lastError = { message: 'Simulated error' };
+              throw new Error('Simulated error');
+            }
+            window.browser.runtime.sendMessage.mock.calls.push(message);
+            // Handle different message types
+            switch (message.action) {
+              case 'getTabs':
+                return { tabs: [] };
+              case 'getSessions':
+                return { sessions: {} };
+              default:
+                return {};
+            }
+          }
+        }
+      };
+      console.log('Enhanced browser mock configured.');
+    });
+
+    // Wait for popup initialization with connection handling
+    await page.waitForFunction(() => {
+      return window.popupInstance && 
+             window.browser?._debug?.isConnected;
+    }, { timeout: 10000 });
+
   });
 
   async function pollForCondition(page, conditionFn, maxAttempts = 20, interval = 100) {
@@ -56,6 +102,54 @@ test.describe('Popup script integration tests', () => {
     }
     return null;
   }
+
+  test('should handle tab loading with error handling', async () => {
+    // Test successful tab loading
+    await page.evaluate(() => {
+      window.browser.tabs.query = async () => ([
+        { id: 1, title: 'Test Tab', url: 'https://test.com' }
+      ]);
+    });
+
+    await page.click('#refresh-tabs');
+    const tabElements = await page.$$('#tab-list .tab-item');
+    expect(tabElements.length).toBe(1);
+
+    // Test error handling
+    await page.evaluate(() => {
+      window.browser.tabs.query = async () => { throw new Error('Tab query failed'); };
+    });
+
+    await page.click('#refresh-tabs');
+    const error = await page.evaluate(() => 
+      document.querySelector('.error-message')?.textContent
+    );
+    expect(error).toContain('Error loading tabs');
+  });
+
+  test('should handle session management operations', async () => {
+    // Test session saving
+    const sessionName = 'Test Session';
+    await page.fill('#session-name-input', sessionName);
+    await page.click('#save-session');
+
+    const messages = await page.evaluate(() => 
+      window.browser.runtime.sendMessage.mock.calls
+    );
+    expect(messages).toContainEqual({
+      action: 'saveSession',
+      sessionName
+    });
+
+    // Test error handling for session operations
+    await page.evaluate(() => {
+      window.browser.runtime.sendMessage.shouldFail = true;
+    });
+    
+    await page.click('#save-session');
+    const errorNotification = await page.locator('.error-notification');
+    expect(await errorNotification.isVisible()).toBe(true);
+  });
 
   test('should load and display tabs', async () => {
     // Wait for tab list container
@@ -116,6 +210,13 @@ test.describe('Popup script integration tests', () => {
   });
 
   test.afterEach(async () => {
+    // Remove any cleanup related to serviceWorker
+    // if (serviceWorker) {
+    //   console.log('Closing service worker:', serviceWorker.url());
+    //   await serviceWorker.evaluate(() => {
+    //     // Any cleanup if necessary
+    //   }).catch(console.warn);
+    // }
     await browserContext?.close();
   });
 });

@@ -12,15 +12,18 @@ import browser from 'webextension-polyfill';
  */
 async function loadOptions() {
   try {
-    const { inactiveThreshold = 60, tabLimit = 100 } = await browser.storage.sync.get(['inactiveThreshold', 'tabLimit']);
-    const thresholdInput = document.getElementById('inactiveThreshold');
-    const tabLimitInput = document.getElementById('tabLimit');
+    const items = await browser.storage.sync.get(['inactiveThreshold', 'tabLimit', 'rules']);
+    const inactiveThreshold = items.inactiveThreshold ?? 60;  // Use nullish coalescing
+    const tabLimit = items.tabLimit ?? 100;  // Use nullish coalescing
+    
+    document.getElementById('inactiveThreshold').value = inactiveThreshold;
+    document.getElementById('tabLimit').value = tabLimit;
 
-    if (thresholdInput) thresholdInput.value = inactiveThreshold;
-    if (tabLimitInput) tabLimitInput.value = tabLimit;
+    // Load rules into the UI
+    const rules = items.rules || [];
+    rules.forEach(addRuleToUI);
   } catch (error) {
     console.error('Error loading options:', error.message);
-    alert('Failed to load options.');
   }
 }
 
@@ -29,23 +32,19 @@ async function loadOptions() {
  * Displays feedback on success or failure.
  */
 async function saveOptions() {
-  const thresholdInput = document.getElementById('inactiveThreshold');
-  const tabLimitInput = document.getElementById('tabLimit');
-  const successMsg = document.getElementById('save-success');
-
-  const inactiveThreshold = parseInt(thresholdInput.value, 10) || 60;
-  const tabLimit = parseInt(tabLimitInput.value, 10) || 100;
-
   try {
+    const inactiveThreshold = parseInt(document.getElementById('inactiveThreshold').value, 10);
+    const tabLimit = parseInt(document.getElementById('tabLimit').value, 10);
+
     await browser.storage.sync.set({ inactiveThreshold, tabLimit });
 
-    if (successMsg) {
-      successMsg.classList.add('visible');
-      setTimeout(() => successMsg.classList.remove('visible'), 2000);
-    }
+    document.getElementById('save-success').classList.add('visible');
+
+    setTimeout(() => {
+      document.getElementById('save-success').classList.remove('visible');
+    }, 2000);
   } catch (error) {
     console.error('Error saving options:', error.message);
-    alert('Failed to save options. Please try again.');
   }
 }
 
@@ -96,17 +95,25 @@ function addRuleToUI(rule = { condition: '', action: '' }) {
  * @param {HTMLElement} input - The input field to validate.
  */
 function validateInput(input) {
-  if (input.value.trim()) {
-    input.classList.remove('invalid');
-  } else {
+  const isEmpty = !input.value.trim();
+  
+  // Remove any existing error message
+  const existingError = input.parentNode.querySelector('.error-message');
+  if (existingError) {
+    existingError.remove();
+  }
+
+  if (isEmpty) {
     input.classList.add('invalid');
     const errorSpan = document.createElement('span');
     errorSpan.className = 'error-message';
     errorSpan.textContent = 'This field is required.';
-    if (!input.parentNode.querySelector('.error-message')) {
-      input.parentNode.appendChild(errorSpan);
-    }
+    input.parentNode.appendChild(errorSpan);
+  } else {
+    input.classList.remove('invalid');
   }
+
+  return !isEmpty;
 }
 
 /**
@@ -114,30 +121,32 @@ function validateInput(input) {
  * Validates rules before saving and notifies the background script.
  */
 async function saveRules() {
-  const rules = [];
-  let isValid = true;
-
-  document.querySelectorAll('.rule-item').forEach((item) => {
-    const condition = item.querySelector('.rule-condition').value.trim();
-    const action = item.querySelector('.rule-action').value.trim();
-
-    if (condition && action) {
-      rules.push({ condition, action });
-    } else {
-      isValid = false;
-      validateInput(item.querySelector('.rule-condition'));
-      validateInput(item.querySelector('.rule-action'));
-    }
-  });
-
-  if (!isValid) {
-    alert('Please fill out all rule fields.');
-    return;
-  }
-
   try {
+    const ruleInputs = Array.from(document.querySelectorAll('.rule-item'));
+    let hasErrors = false;
+
+    const rules = ruleInputs.map(ruleItem => {
+      const condition = ruleItem.querySelector('.rule-condition');
+      const action = ruleItem.querySelector('.rule-action');
+      
+      const isConditionValid = validateInput(condition);
+      const isActionValid = validateInput(action);
+      
+      if (!isConditionValid || !isActionValid) {
+        hasErrors = true;
+      }
+
+      return {
+        condition: condition.value.trim(),
+        action: action.value.trim()
+      };
+    });
+
+    if (hasErrors) {
+      throw new Error('Invalid rule');
+    }
+
     await browser.storage.sync.set({ rules });
-    alert('Rules saved successfully!');
     await browser.runtime.sendMessage({ action: 'updateRules', rules });
   } catch (error) {
     console.error('Error saving rules:', error.message);

@@ -25,3 +25,11 @@ export const createComplexTabs = () => [
   createMockTab(4, { title: 'Duplicate URL', url: 'https://duplicate.com' }),
   createMockTab(5, { title: 'Very'.repeat(100) }) // Long title
 ];
+
+export const createMockPort = (name = 'test-port') => ({
+  name,
+  onMessage: createMockListener(),
+  onDisconnect: createMockListener(),
+  postMessage: jest.fn(),
+  disconnect: jest.fn(),
+});

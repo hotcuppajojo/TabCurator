@@ -10,8 +10,26 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div id="root"></div>
-  <!-- Removed existing HTML content; React will render into #root -->
+  <div class="container">
+    <div id="tab-list" class="tab-list" role="list" aria-label="Open tabs"></div>
+    <div class="controls">
+      <button id="archiveTabButton" class="btn">Archive Tab</button>
+      <button id="viewArchivesButton" class="btn">View Archives</button>
+      <button id="saveSessionButton" class="btn">Save Session</button>
+      <button id="viewSessionsButton" class="btn">View Sessions</button>
+      <button id="suspend-inactive-tabs" class="btn">Suspend Inactive</button>
+    </div>
+    <div id="tagging-prompt" class="modal" style="display: none;">
+      <div class="modal-content">
+        <h3>Would you like to tag this inactive tab?</h3>
+        <div class="controls">
+          <button id="tag-oldest-tab" class="btn">Tag Tab</button>
+          <button id="dismiss-tagging" class="btn">Dismiss</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="../vendor/browser-polyfill.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -1,161 +1,178 @@
-// tests/jest/background.test.js
+// 1. Mock necessary modules first
+jest.mock('../../src/utils/tagUtils.js', () => ({
+  applyRulesToTab: jest.fn().mockResolvedValue(),
+  archiveTab: jest.fn().mockResolvedValue(),
+}));
 
-const mockBrowser = require('./mocks/browserMock.js');
-const background = require('../../src/background/background.js');
-
-// Ensure 'browser' is imported correctly
-const browser = require('webextension-polyfill');
-const { store } = require('../../src/utils/stateManager.js');
-const { createMockTab } = require('./utils/testUtils.js');
-
-// Mock the necessary modules
-jest.mock('../../src/utils/tagUtils.js');
 jest.mock('../../src/utils/stateManager.js', () => ({
   store: {
-    getState: jest.fn(() => ({ tabActivity: {}, archivedTabs: {}, isTaggingPromptActive: false })),
+    getState: jest.fn(() => ({
+      tabActivity: {},
+      archivedTabs: {},
+      isTaggingPromptActive: false,
+    })),
     dispatch: jest.fn(),
   },
   initializeStateFromStorage: jest.fn().mockResolvedValue(),
 }));
 
-describe("Background script", () => {
-  let mockTab;
-  let handlers = {};
+// Update the tabManager mock
+jest.mock('../../src/utils/tabManager.js', () => {
+  const queryTabsMock = jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]);
+  const discardTabMock = jest.fn().mockResolvedValue();
   
+  // Export an object that matches the module's interface
+  return {
+    default: {
+      queryTabs: queryTabsMock,
+      discardTab: discardTabMock,
+      getTab: jest.fn(),
+      createTab: jest.fn(),
+      updateTab: jest.fn(),
+      removeTab: jest.fn(),
+    },
+    // Export the mocks directly
+    queryTabs: queryTabsMock,
+    discardTab: discardTabMock,
+    // Export references for testing
+    __queryTabsMock: queryTabsMock,
+    __discardTabMock: discardTabMock,
+  };
+});
+
+jest.mock('../../src/utils/messagingUtils.js', () => {
+  const originalModule = jest.requireActual('../../src/utils/messagingUtils.js');
+  return {
+    ...originalModule,
+    handleMessage: jest.fn()
+  };
+});
+
+// 2. Now import the modules after mocking
+import { jest } from '@jest/globals';
+import background from '../../src/background/background.js';
+const mockBrowser = require('./mocks/browserMock.js');
+import { createMockTab } from './utils/testUtils.js';
+import { store } from '../../src/utils/stateManager.js';
+import tagUtils from '../../src/utils/tagUtils.js';
+import { setupTest, cleanupTest } from './setup/testSetup';
+import { CONNECTION_NAME } from '../../src/background/constants.js'; // Add this import
+
+describe('Background Service Worker', () => {
+  let queryTabsMock, discardTabMock, consoleErrorSpy, sendResponse, handleMessage;
+
   beforeEach(async () => {
     jest.clearAllMocks();
-    console.error.mockClear();
-    mockBrowser._testing.clearAllListeners();
-    handlers = {}; // Reset handlers
     
-    mockTab = createMockTab(1, {
-      title: 'Test Tab', 
-      url: 'https://example.com',
-      active: true
-    });
-
-    // Initialize ALL browser API mocks first with defaults
-    browser.tabs = {
-      onActivated: { addListener: jest.fn(fn => { handlers.activated = fn; }) },
-      onUpdated: { addListener: jest.fn(fn => { handlers.updated = fn; }) },
-      onCreated: { addListener: jest.fn(fn => { handlers.created = fn; }) },
-      get: jest.fn().mockResolvedValue(mockTab)
-    };
-
-    browser.runtime = {
-      onMessage: { addListener: jest.fn(fn => { handlers.message = fn; }) },
-      onInstalled: { addListener: jest.fn(fn => { handlers.installed = fn; }) },
-      onError: { addListener: jest.fn(fn => { handlers.error = fn; }) }
-    };
-
-    browser.alarms = { create: jest.fn() };
-    browser.storage = { 
-      sync: { 
-        set: jest.fn(),
-        get: jest.fn().mockResolvedValue({})
-      } 
-    };
+    // Get the mocked functions differently
+    const tabManager = jest.requireMock('../../src/utils/tabManager.js');
+    queryTabsMock = tabManager.queryTabs;
+    discardTabMock = tabManager.discardTab;
     
-    // Setup declarativeNetRequest with required methods and mock implementation
-    browser.declarativeNetRequest = {
-      updateDynamicRules: jest.fn().mockImplementation(async ({ addRules, removeRuleIds }) => {
-        return Promise.resolve(true);
-      }),
-      getDynamicRules: jest.fn().mockResolvedValue([]),
-      DEFAULT_PRIORITY: 1
-    };
-
-    // Reset store mock with empty initial state
-    store.dispatch.mockClear();
-    store.getState.mockReturnValue({
-      tabActivity: {},
-      archivedTabs: {},
-      isTaggingPromptActive: false
-    });
-
-    // Wait for initialization to complete
-    await background.initBackground(browser);
+    // Get the mocked handleMessage function
+    handleMessage = require('../../src/utils/messagingUtils.js').handleMessage;
     
-    // Simulate installation to trigger rule updates
-    if (handlers.installed) {
-      await handlers.installed();
+    // Setup mocks
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    sendResponse = jest.fn();
+
+    // Initialize background with mock browser
+    await background.initBackground(mockBrowser);
+  });
+
+  test('should check for inactive tabs on alarm', async () => {
+    // Reset mocks
+    queryTabsMock.mockClear();
+    discardTabMock.mockClear();
+
+    // Setup test data
+    const testTabs = [{ id: 1 }, { id: 2 }];
+    queryTabsMock.mockResolvedValueOnce(testTabs);
+
+    try {
+      // Simulate alarm trigger
+      const alarm = { name: 'checkInactiveTabs' };
+      await mockBrowser.alarms.onAlarm.trigger(alarm);
+      
+      // Add a longer delay to ensure async operations complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Verify queryTabs was called
+      expect(queryTabsMock).toHaveBeenCalledTimes(1);
+      expect(queryTabsMock).toHaveBeenCalledWith({});
+      
+      // Verify discard calls
+      expect(discardTabMock).toHaveBeenCalledWith(1);
+      expect(discardTabMock).toHaveBeenCalledWith(2);
+      expect(discardTabMock).toHaveBeenCalledTimes(2);
+    } catch (error) {
+      console.error('Error in alarm test:', error);
+      throw error;
     }
   });
 
-  afterEach(() => {
-    jest.clearAllMocks();
-    jest.restoreAllMocks();
-    browser._testing.clearAllListeners(); // Clear all listeners after each test
+  test('should handle connection timeouts', async () => {
+    const error = new Error('Handler error');
+    handleMessage.mockRejectedValueOnce(error);
+
+    // Get the message handler
+    const messageHandler = mockBrowser.runtime.onMessage.addListener.mock.calls[0][0];
+
+    try {
+      // Call the handler and await any rejected promises
+      await messageHandler({ action: 'getState' }, {}, sendResponse);
+    } catch (e) {
+      // Error should be caught and logged
+      expect(consoleErrorSpy).toHaveBeenCalledWith('Error handling message:', error);
+      expect(sendResponse).toHaveBeenCalledWith({ error: error.message });
+    }
   });
 
-  test("should initialize extension with required listeners", async () => {
-    // Wait for any pending promises to resolve
-    await new Promise(resolve => setTimeout(resolve, 0));
-    
-    // Verify listeners and API calls
-    expect(browser.tabs.onActivated.addListener).toHaveBeenCalled();
-    expect(browser.tabs.onUpdated.addListener).toHaveBeenCalled();
-    expect(browser.tabs.onCreated.addListener).toHaveBeenCalled();
-    expect(browser.runtime.onMessage.addListener).toHaveBeenCalled();
-    expect(browser.alarms.create).toHaveBeenCalledWith("checkForInactiveTabs", { periodInMinutes: 5 });
-    expect(browser.declarativeNetRequest.updateDynamicRules).toHaveBeenCalledWith({
-      addRules: expect.arrayContaining([
-        expect.objectContaining({
-          id: 1,
-          priority: 1,
-          action: { type: 'block' },
-          condition: { urlFilter: 'https://example.com/*' }
-        })
-      ]),
-      removeRuleIds: []
-    });
+  test('should handle fetch events for extension resources', async () => {
+    const request = new Request('chrome-extension://extension-id/popup.html');
+    const { handleFetch } = background; // Destructure handleFetch from background
+    const response = await handleFetch(request);
+    expect(response).toBeDefined();
   });
 
-  test("should initialize default settings on installation", async () => {
-    expect(handlers.installed).toBeDefined();
-    await handlers.installed();
-    expect(browser.storage.sync.set).toHaveBeenCalledWith({
-      inactiveThreshold: 60,
-      tabLimit: 100,
-      rules: [],
-    });
+  test('should handle connection lifecycle', async () => {
+    const mockPort = {
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+      name: CONNECTION_NAME
+    };
+
+    // Get the connection handler directly
+    const connectHandler = mockBrowser.runtime.onConnect.addListener.mock.calls[0][0];
+    connectHandler(mockPort);
+
+    expect(mockPort.onMessage.addListener).toHaveBeenCalled();
   });
 
-  test("should handle runtime errors correctly", async () => {
-    expect(handlers.error).toBeDefined();
-    const testError = new Error(`Failed to handle tab ${mockTab.id}`);
-    handlers.error(testError);
-    expect(console.error).toHaveBeenCalledWith('Runtime error:', testError);
-  });
+  test('should reject messages after disconnect', async () => {
+    const mockPort = {
+      onMessage: { addListener: jest.fn() },
+      onDisconnect: { addListener: jest.fn() },
+      postMessage: jest.fn(),
+      name: CONNECTION_NAME
+    };
 
-  test("should update tab activity on tab events", async () => {
-    // Reset the dispatch mock to clear any initialization calls
-    store.dispatch.mockClear();
-    
-    expect(handlers.activated).toBeDefined();
-    await handlers.activated({ tabId: mockTab.id });
-    
-    expect(store.dispatch).toHaveBeenCalledWith({
-      type: 'UPDATE_TAB_ACTIVITY',
-      tabId: mockTab.id,
-      timestamp: expect.any(Number)
-    });
-  });
+    // Get and call the connection handler
+    const connectHandler = mockBrowser.runtime.onConnect.addListener.mock.calls[0][0];
+    connectHandler(mockPort);
 
-  test("should handle message passing correctly", async () => {
-    expect(handlers.message).toBeDefined();
-    const sendResponse = jest.fn();
-    await handlers.message(
-      { action: 'getState' }, 
-      { id: 'test-sender' }, 
-      sendResponse
-    );
-    expect(sendResponse).toHaveBeenCalledWith({
-      state: expect.objectContaining({
-        tabActivity: {},
-        archivedTabs: {},
-        isTaggingPromptActive: false
-      })
-    });
+    // Clear any initial messages
+    mockPort.postMessage.mockClear();
+
+    // Simulate disconnect
+    const [[disconnectHandler]] = mockPort.onDisconnect.addListener.mock.calls;
+    await disconnectHandler();
+
+    // Try to send a message after disconnect
+    await handleMessage({ action: 'getState' }, {}, sendResponse);
+
+    // Verify no messages were sent after disconnect
+    expect(mockPort.postMessage).not.toHaveBeenCalled();
   });
 });

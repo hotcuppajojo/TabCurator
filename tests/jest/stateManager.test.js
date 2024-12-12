@@ -34,6 +34,12 @@ describe("State Manager", () => {
     await initializeStateFromStorage();
   });
 
+  afterEach(async () => {
+    jest.clearAllTimers(); // Stop timers to prevent further processing
+    jest.useRealTimers(); // Ensure real timers are restored
+    // await _cleanup(); // If there's a cleanup function, ensure it's called
+  });
+
   test("should initialize with default state", () => {
     const state = store.getState();
     expect(state).toEqual({

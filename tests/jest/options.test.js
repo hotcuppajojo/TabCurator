@@ -6,22 +6,59 @@ const browser = require('webextension-polyfill');
 const { initOptions, saveOptions, addRuleToUI, validateInput, saveRules, loadOptions } = require('../../src/options/options');
 
 describe("Options Management", () => {
-  let browser;
+  let mockStorage;
 
   beforeEach(() => {
     jest.clearAllMocks();
     console.error = jest.fn();
-    browser = require('webextension-polyfill');
     
-    // Setup minimal DOM for testing
+    // Setup mock storage state
+    mockStorage = {
+      data: {
+        inactiveThreshold: 45,
+        tabLimit: 75,
+        rules: [{ condition: 'test.com', action: 'Tag: Test' }]
+      }
+    };
+
+    // Setup mock browser APIs
+    browser.storage = {
+      sync: {
+        get: jest.fn().mockImplementation(async (keys) => {
+          if (!keys) return mockStorage.data;
+          if (Array.isArray(keys) || typeof keys === 'string') {
+            const result = {};
+            (Array.isArray(keys) ? keys : [keys]).forEach(key => {
+              result[key] = mockStorage.data[key];
+            });
+            return result;
+          }
+          return mockStorage.data;
+        }),
+        set: jest.fn().mockImplementation(async (items) => {
+          Object.assign(mockStorage.data, items);
+          return Promise.resolve();
+        })
+      }
+    };
+
+    browser.runtime = {
+      sendMessage: jest.fn().mockResolvedValue(undefined)
+    };
+
+    // Setup minimal DOM with default values
     document.body.innerHTML = `
-      <input id="inactiveThreshold" type="number" value="60">
-      <input id="tabLimit" type="number" value="100">
+      <input id="inactiveThreshold" type="number">
+      <input id="tabLimit" type="number">
       <div id="save-success"></div>
       <button id="addRuleButton"></button>
       <button id="saveRulesButton">Save Rules</button>
       <ul id="rulesList"></ul>
     `;
+  });
+
+  afterEach(async () => {
+    // Remove jest.clearAllTimers(); as timers are now managed globally
   });
 
   describe('Options Loading', () => {
@@ -35,11 +72,6 @@ describe("Options Management", () => {
     });
 
     test('should load stored values from browser storage', async () => {
-      browser.storage.sync.get.mockResolvedValue({
-        inactiveThreshold: 45,
-        tabLimit: 75
-      });
-      
       await loadOptions();
       
       expect(document.getElementById('inactiveThreshold').value).toBe('45');
@@ -48,7 +80,7 @@ describe("Options Management", () => {
 
     test('should handle storage errors gracefully', async () => {
       const error = new Error('Storage error');
-      browser.storage.sync.get.mockRejectedValue(error);
+      browser.storage.sync.get.mockRejectedValueOnce(error);
       
       await loadOptions();
       
@@ -118,7 +150,7 @@ describe("Options Management", () => {
 
     test('should handle save errors', async () => {
       const error = new Error('Save failed');
-      browser.storage.sync.set.mockRejectedValue(error);
+      browser.storage.sync.set.mockRejectedValueOnce(error);
       
       await saveOptions();
       

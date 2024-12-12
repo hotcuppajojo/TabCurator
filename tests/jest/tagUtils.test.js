@@ -1,7 +1,7 @@
 // tests/jest/tagUtils.test.js
 
 // Import the mocked browser
-const browser = require('webextension-polyfill');
+const browser = require('./mocks/browserMock');
 
 // Import after browser mock is set up
 const { tagTab, archiveTab, applyRulesToTab } = require('../../src/utils/tagUtils.js');
@@ -28,9 +28,14 @@ describe("Tag Utils", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    global.browser = browser; // Assign the mocked browser
     console.error = jest.fn(); // Mock console.error
     // Get fresh instance of the mocked browser
     // browser = require('webextension-polyfill');
+  });
+
+  afterEach(async () => {
+    jest.clearAllTimers(); // Stop timers to prevent further processing
   });
 
   describe('tagTab', () => {
@@ -63,6 +68,20 @@ describe("Tag Utils", () => {
 
       await expect(tagTab(1, 'Important')).rejects.toThrow(error);
       expect(console.error).toHaveBeenCalledWith('Failed to tag tab 1:', error);
+    });
+
+    test('should handle special characters in tags', async () => {
+      const tabId = 1;
+      const tag = 'Special & Characters';
+      const tab = { id: tabId, title: 'Original Title', url: 'https://example.com' };
+
+      getTab.mockResolvedValue(tab);
+      updateTab.mockResolvedValue({ ...tab, title: `[${tag}] ${tab.title}` });
+
+      await tagTab(tabId, tag);
+
+      expect(getTab).toHaveBeenCalledWith(tabId);
+      expect(updateTab).toHaveBeenCalledWith(tabId, { title: `[${tag}] ${tab.title}` });
     });
   });
 
@@ -170,10 +189,13 @@ describe("Tag Utils", () => {
 
     test('should handle special characters in tags', async () => {
       const specialChars = '!@#$%^&*()';
+      const mockTab = { id: 1, title: 'Original Title', url: 'https://example.com' };
+      getTab.mockResolvedValueOnce(mockTab);
+      
       await tagTab(1, specialChars);
       expect(updateTab).toHaveBeenCalledWith(1, 
         expect.objectContaining({ 
-          title: expect.stringContaining(specialChars) 
+          title: `[${specialChars}] ${mockTab.title}` 
         })
       );
     });
@@ -219,11 +241,17 @@ describe("Tag Utils", () => {
   describe('Declarative Pattern Tests', () => {
     test('should apply rules declaratively', async () => {
       const mockStore = {
-        getState: jest.fn(() => ({ archivedTabs: {} })),
+        getState: jest.fn(() => ({ 
+          archivedTabs: {},
+          rules: [{
+            condition: 'example.com',
+            action: 'Tag: Work'
+          }]
+        })),
         dispatch: jest.fn()
       };
 
-      const mockBrowser = {
+      const testBrowser = {
         storage: {
           sync: {
             get: jest.fn().mockResolvedValue({
@@ -236,12 +264,25 @@ describe("Tag Utils", () => {
         }
       };
 
-      const tab = createMockTab(1, { url: 'https://example.com' });
-      await applyRulesToTab(tab, mockBrowser, mockStore);
+      const tab = { 
+        id: 1, 
+        url: 'https://example.com', 
+        title: 'Test Tab'
+      };
 
+      getTab.mockResolvedValueOnce(tab);
+      removeTab.mockResolvedValueOnce();
+
+      await applyRulesToTab(tab, testBrowser, mockStore);
+      
+      // Verify the dispatch was called with the correct action
       expect(mockStore.dispatch).toHaveBeenCalledWith(
         expect.objectContaining({
-          type: 'ARCHIVE_TAB'
+          type: 'ARCHIVE_TAB',
+          payload: expect.objectContaining({
+            tag: 'Work',
+            tabData: expect.any(Object)
+          })
         })
       );
     });

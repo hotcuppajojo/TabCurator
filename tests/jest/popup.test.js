@@ -10,11 +10,36 @@ import { createMockTab, createBulkTabs, createTaggedTab, createComplexTabs } fro
 
 const initPopup = require("../../src/popup/popup");
 
+jest.setTimeout(30000); // Set global timeout to 30 seconds for all tests
+
+// If opting to mock Playwright's `page`, ensure all necessary methods are mocked
+const page = {
+  evaluate: jest.fn().mockResolvedValue(),
+  click: jest.fn().mockResolvedValue(),
+  waitForSelector: jest.fn().mockResolvedValue(),
+  // Add other methods as needed
+};
+
+// Initialize the mocked `page` before tests
+beforeEach(() => {
+  global.page = page;
+  // Ensure all mocks are reset before each test
+  jest.clearAllMocks();
+});
+
 describe("Popup script", () => {
   let popup;
 
   beforeAll(() => {
-    browser.tabs.discard = jest.fn();
+    // Ensure 'tabs.discard' is defined in the mock
+    if (browser.tabs) {
+      browser.tabs.discard = jest.fn();
+    } else {
+      browser.tabs = {
+        discard: jest.fn(),
+        // ...other tab methods...
+      };
+    }
   });
 
   beforeEach(() => {
@@ -56,8 +81,17 @@ describe("Popup script", () => {
     // Use utility function to create mock tabs
     browser.tabs.query.mockResolvedValue(createBulkTabs(3));
 
-    // Initialize event listeners for the tests
-    popup._testHelpers.initializeEventListeners();
+    // Simulate DOMContentLoaded event to initialize event listeners
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+  });
+
+  afterEach(async () => {
+    // Await any pending promises
+    await Promise.resolve();
+    
+    // Clear all mocks and timers
+    jest.clearAllMocks();
+    jest.clearAllTimers(); // Stop timers to prevent further processing
   });
 
   /**
@@ -134,8 +168,8 @@ describe("Popup script", () => {
     const tagButton = document.getElementById("tag-oldest-tab");
     tagButton.click();
 
-    // Wait for all async operations to complete
-    await new Promise(resolve => setTimeout(resolve, 0));
+    // Wait for all promises to resolve
+    await new Promise(resolve => setImmediate(resolve));
 
     expect(browser.tabs.get).toHaveBeenCalledWith(1);
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
@@ -147,7 +181,7 @@ describe("Popup script", () => {
         tabData: { title: taggedTab.title, url: taggedTab.url },
       },
     });
-  });
+  }, 30000);
 
   /**
    * Validates archive tab button functionality
@@ -155,7 +189,7 @@ describe("Popup script", () => {
    */
   it("should handle click event for archive tab button", async () => {
     const archiveButton = document.getElementById("archiveTabButton");
-
+    
     // Mock tabs.get response for getting current tab
     const currentTab = createMockTab(1, { title: 'Current Tab', url: 'https://current.com' });
     browser.tabs.get.mockResolvedValue(currentTab);
@@ -165,9 +199,8 @@ describe("Popup script", () => {
 
     archiveButton.click();
 
-    // Wait for all promises to resolve and use flushPromises utility
-    await Promise.resolve();
-    await new Promise(process.nextTick);
+    // Wait for all promises to resolve
+    await new Promise(resolve => setImmediate(resolve));
 
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
       action: 'archiveTab',
@@ -175,7 +208,7 @@ describe("Popup script", () => {
       tag: 'Research',
     });
     expect(window.close).toHaveBeenCalled();
-  });
+  }, 30000);
 
   /**
    * Validates view archived tabs button functionality
@@ -194,14 +227,13 @@ describe("Popup script", () => {
 
     viewArchivesButton.click();
 
-    // Wait for all promises to resolve and use flushPromises utility
-    await Promise.resolve();
-    await new Promise(process.nextTick);
+    // Wait for all promises to resolve
+    await new Promise(resolve => setImmediate(resolve));
 
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({ 
       action: "getArchivedTabs" 
     });
-  });
+  }, 30000);
 
   /**
    * Validates session management functionality
@@ -220,7 +252,7 @@ describe("Popup script", () => {
     // Trigger session save
     saveSessionButton.click();
     
-    // Allow async operations to complete
+    // Await all pending promises to ensure completion
     await Promise.resolve();
     
     // Verify prompt and message sending
@@ -228,8 +260,9 @@ describe("Popup script", () => {
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith(
       { action: "saveSession", sessionName: "Morning Session" }
     );
-  });
-  
+    
+  }, 30000);
+
   /**
    * Validates session viewing functionality
    * Tests retrieval and display of saved sessions
@@ -247,14 +280,13 @@ describe("Popup script", () => {
 
     viewSessionsButton.click();
 
-    // Wait for all promises to resolve and use flushPromises utility
-    await Promise.resolve();
-    await new Promise(process.nextTick);
+    // Wait for all promises to resolve
+    await new Promise(resolve => setImmediate(resolve));
 
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({ 
       action: "getSessions" 
     });
-  });
+  }, 30000);
 
   /**
    * Validates complex tab scenarios

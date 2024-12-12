@@ -1,14 +1,36 @@
 // tests/jest/mocks/browserMock.js
 
+// Add Jest type checking and safe mock creation
+const isTesting = typeof jest !== 'undefined';
+
+const createMockFn = (implementation) => {
+  if (isTesting) {
+    return jest.fn(implementation);
+  }
+  return (...args) => implementation ? implementation(...args) : undefined;
+};
+
+const createMockPort = () => ({
+  name: 'mockPort',
+  onMessage: {
+    addListener: createMockFn(),
+    removeListener: createMockFn()
+  },
+  onDisconnect: {
+    addListener: createMockFn(),
+    removeListener: createMockFn()
+  },
+  postMessage: createMockFn(),
+  disconnect: createMockFn()
+});
+
 /**
  * Creates a complete mock browser event listener with standard Chrome extension APIs
- * @returns {object} Mock event listener implementation
  */
 const createMockListener = () => {
   const listeners = new Set();
-
-  // Create a mock function that adds listeners to the Set
-  const addListenerMock = jest.fn((listener) => {
+  
+  const addListener = createMockFn((listener) => {
     if (typeof listener === 'function') {
       listeners.add(listener);
       return true;
@@ -16,27 +38,28 @@ const createMockListener = () => {
     return false;
   });
 
-  const hasListenersMock = jest.fn(() => listeners.size > 0);
-  const getListenersMock = jest.fn(() => Array.from(listeners));
+  const removeListener = createMockFn((listener) => {
+    listeners.delete(listener);
+  });
+
+  const hasListener = createMockFn((listener) => listeners.has(listener));
+  const hasListeners = createMockFn(() => listeners.size > 0);
+  const getListeners = createMockFn(() => Array.from(listeners));
+  const trigger = async (...args) => {
+    for (const listener of listeners) {
+      await listener(...args);
+    }
+  };
 
   return {
-    addListener: addListenerMock,
-    removeListener: jest.fn((listener) => {
-      const result = listeners.delete(listener);
-      return result;
-    }),
-    hasListener: jest.fn((listener) => listeners.has(listener)),
-    hasListeners: hasListenersMock,
-    getListeners: getListenersMock,
-    trigger: jest.fn((...args) => {
-      listeners.forEach(listener => listener(...args));
-      return true;
-    }),
+    addListener,
+    removeListener,
+    hasListener,
+    hasListeners,
+    getListeners,
+    trigger,
     _reset: () => {
       listeners.clear();
-      addListenerMock.mockClear();
-      hasListenersMock.mockClear();
-      getListenersMock.mockClear();
     }
   };
 };
@@ -46,101 +69,117 @@ const mockBrowser = {
   runtime: {
     onInstalled: createMockListener(),
     onMessage: createMockListener(),
-    sendMessage: jest.fn((message) => Promise.resolve({ success: true })),
-    lastError: null,
+    sendMessage: createMockFn(() => Promise.resolve({ success: true })),
+    lastError: {
+      message: null,
+      set: function(msg) { this.message = msg; }
+    },
     onConnect: createMockListener(),
     onError: createMockListener(),
     onStartup: createMockListener(),
-    onSuspend: createMockListener()
+    onSuspend: createMockListener(),
+    connect: createMockFn(() => createMockPort())
   },
   tabs: {
     onCreated: createMockListener(),
     onRemoved: createMockListener(),
     onUpdated: createMockListener(),
     onActivated: createMockListener(),
-    query: jest.fn().mockResolvedValue([
+    query: createMockFn(() => Promise.resolve([
       { id: 1, title: 'Tab 1', url: 'https://example.com', active: false },
       { id: 2, title: 'Tab 2', url: 'https://example2.com', active: true }
-    ]),
-    get: jest.fn().mockResolvedValue({
+    ])),
+    get: createMockFn(() => Promise.resolve({
       id: 1,
       url: 'https://example.com',
       title: 'Test Tab'
-    }),
-    create: jest.fn().mockImplementation(createProperties => 
-      Promise.resolve({ id: Date.now(), ...createProperties })),
-    update: jest.fn().mockImplementation((tabId, updateProperties) =>
-      Promise.resolve({ id: tabId, ...updateProperties })),
-    remove: jest.fn().mockResolvedValue(),
-    discard: jest.fn().mockImplementation(tabId =>
-      Promise.resolve({ id: tabId, discarded: true }))
+    })),
+    create: createMockFn(createProperties => Promise.resolve({ id: Date.now(), ...createProperties })),
+    update: createMockFn((tabId, updateProperties) => Promise.resolve({ id: tabId, ...updateProperties })),
+    remove: createMockFn(() => Promise.resolve()),
+    discard: createMockFn(tabId => Promise.resolve({ id: tabId, discarded: true }))
   },
-  alarms: {
-    create: jest.fn(),
-    onAlarm: createMockListener()
-  },
+  alarms: (() => {
+    const listeners = new Set();
+    return {
+      create: createMockFn(),
+      get: createMockFn(),
+      getAll: createMockFn(() => Promise.resolve([])),
+      clear: createMockFn(() => Promise.resolve(true)),
+      clearAll: createMockFn(() => Promise.resolve(undefined)),
+      onAlarm: createMockListener()  // Use the existing createMockListener function
+    };
+  })(),
   storage: {
     sync: {
-      get: jest.fn().mockImplementation((keys) => {
-        const defaultData = {
-          archivedTabs: {},
-          tabActivity: {},
-          savedSessions: {},
-          isTaggingPromptActive: false,
-          inactiveThreshold: 60,
-          tabLimit: 100,
-          rules: []
-        };
-        if (typeof keys === 'string') {
-          return Promise.resolve({ [keys]: defaultData[keys] });
-        }
-        return Promise.resolve(defaultData);
+      _data: {
+        archivedTabs: {},
+        tabActivity: {},
+        savedSessions: {},
+        isTaggingPromptActive: false,
+        inactiveThreshold: 60,
+        tabLimit: 100,
+        rules: []
+      },
+      get: createMockFn(function(keys) {
+        return Promise.resolve(this._data);
       }),
-      set: jest.fn().mockResolvedValue(),
-      remove: jest.fn().mockResolvedValue()
+      set: createMockFn(function(items) {
+        Object.assign(this._data, items);
+        return Promise.resolve();
+      }),
+      remove: createMockFn(function(keys) {
+        if (typeof keys === 'string') {
+          delete this._data[keys];
+        } else if (Array.isArray(keys)) {
+          keys.forEach(key => delete this._data[key]);
+        }
+        return Promise.resolve();
+      })
     },
     local: {
-      get: jest.fn().mockResolvedValue({}),
-      set: jest.fn().mockResolvedValue(),
-      remove: jest.fn().mockResolvedValue()
+      get: createMockFn(() => Promise.resolve({})),
+      set: createMockFn(() => Promise.resolve()),
+      remove: createMockFn(() => Promise.resolve())
     },
     onChanged: createMockListener()
+  },
+  declarativeNetRequest: {
+    updateDynamicRules: createMockFn(() => Promise.resolve())
+  },
+  _reset: function() {
+    // Reset all event listeners and mocks
+    Object.values(this.runtime).forEach(event => {
+      if (event && typeof event._reset === 'function') event._reset();
+    });
+    Object.values(this.tabs).forEach(event => {
+      if (event && typeof event._reset === 'function') event._reset();
+    });
+    
+    // Reset storage
+    this.storage.sync._data = {
+      archivedTabs: {},
+      tabActivity: {},
+      savedSessions: {},
+      isTaggingPromptActive: false,
+      inactiveThreshold: 60,
+      tabLimit: 100,
+      rules: []
+    };
+    
+    // Reset global.self.listeners if needed
+    if (global.self && global.self.listeners) {
+      global.self.listeners.clear();
+    }
+    
+    // Reset global.page.goto if needed
+    if (global.page && global.page.goto) {
+      global.page.goto.mockClear();
+    }
   }
 };
 
-// Add support for state operations in storage mock
-mockBrowser.storage.sync = {
-  ...mockBrowser.storage.sync,
-  get: jest.fn().mockImplementation(() => Promise.resolve({
-    archivedTabs: {},
-    tabActivity: {},
-    savedSessions: {},
-    isTaggingPromptActive: false
-  }))
-};
-
-// Add declarativeNetRequest mocks
-mockBrowser.declarativeNetRequest = {
-  updateDynamicRules: jest.fn().mockResolvedValue(),
-};
-
-// Update exports to include testing utilities
-module.exports = {
-  ...mockBrowser,
-  _testing: {
-    createMockListener,
-    clearAllListeners: () => {
-      const clearListeners = (obj) => {
-        Object.values(obj).forEach(val => {
-          if (val && typeof val === 'object' && val._reset) {
-            val._reset();
-          }
-        });
-      };
-      clearListeners(mockBrowser.tabs);
-      clearListeners(mockBrowser.runtime);
-      clearListeners(mockBrowser.alarms);
-    }
-  },
-  default: mockBrowser, // Ensure 'default' export for 'webextension-polyfill'
-};
+// Export for both Jest and non-Jest environments
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = mockBrowser;
+}

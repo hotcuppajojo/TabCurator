@@ -31,12 +31,12 @@ export default defineConfig({
         '--allow-insecure-localhost',
       ],
       slowMo: 50, // Minimal slowdown for stability
-      timeout: 120000, // Increased launch timeout to 120 seconds
+      timeout: 120000, // Ensure adequate timeout for extension loading
     },
     javaScriptEnabled: true,
     trace: 'on-first-retry', // Enable trace for failed tests
     video: 'retain-on-failure', // Record video on failure
-    serviceWorkers: 'allow',
+    // serviceWorkers: 'allow', // Remove or comment out this line
   },
   retries: 2, // Increase retries
   workers: 1, // Run tests serially for more stability

@@ -148,6 +148,12 @@ const injectBrowserMock = async (page) => {
       onAlarm: { addListener: createMockFn() }
     };
 
+    // Remove or comment out any serviceWorkers mocks
+    // window.browser.serviceWorkers = {
+    //   register: createMockFn(),
+    //   // ...other serviceWorker mocks...
+    // };
+
     // Add logging to mock functions
     const originalSendMessage = window.browser.runtime.sendMessage;
     window.browser.runtime.sendMessage = (...args) => {

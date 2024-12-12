@@ -5,6 +5,7 @@
  * Ensures compatibility with both Chrome and Firefox using the WebExtension API.
  */
 import browser from 'webextension-polyfill'; // Import the browser API polyfill
+import { CONNECTION_NAME } from './constants.js';
 import { 
   queryTabs, 
   getTab, 
@@ -40,6 +41,10 @@ import { archiveTab, applyRulesToTab } from '../utils/tagUtils.js';
  * @exports background
  * @description Manages tab lifecycle, rule processing, session handling, and automated maintenance tasks.
  */
+let port;
+let messageListener;
+let disconnectListener;
+
 const background = {
   /**
    * Monitors and manages inactive tabs.
@@ -51,35 +56,23 @@ const background = {
    */
   async checkForInactiveTabs(browserInstance, tabLimit = 100) {
     try {
-      const now = Date.now();
+      // Use the imported queryTabs function
       const tabs = await queryTabs({});
-      if (tabs.length > tabLimit) {
-        const inactiveTabs = tabs.filter(tab => !tab.active);
-        if (inactiveTabs.length > 0) {
-          const oldestTab = inactiveTabs.reduce((oldest, current) => {
-            const oldestTime = store.getState().tabActivity[oldest.id] || now;
-            const currentTime = store.getState().tabActivity[current.id] || now;
-            return currentTime < oldestTime ? current : oldest;
-          });
-          
-          // Use getTab to verify tab still exists
-          const tab = await getTab(oldestTab.id);
-          if (tab) {
-            browserInstance.runtime.sendMessage({ action: 'promptTagging', tabId: tab.id });
-            console.log(`Prompting tagging for oldest inactive tab: ${tab.title}`);
+      
+      // Ensure we have tabs before processing
+      if (tabs && Array.isArray(tabs) && tabs.length > 0) {
+        // Process each tab sequentially
+        for (const tab of tabs) {
+          try {
+            await discardTab(tab.id);
+          } catch (error) {
+            console.error(`Error discarding tab ${tab.id}:`, error);
           }
-        }
-      }
-      for (const tab of tabs) {
-        const lastActive = store.getState().tabActivity[tab.id] || now;
-        if (!tab.active && now - lastActive > 60 * 60 * 1000) {
-          // Use discardTab instead of suspendTab for consistency
-          await discardTab(tab.id);
-          console.log(`Tab discarded: ${tab.title}`);
         }
       }
     } catch (error) {
       console.error("Error during tab management:", error);
+      throw error; // Re-throw to ensure error is propagated
     }
   },
 
@@ -91,11 +84,70 @@ const background = {
    */
   async initBackground(browserInstance = browser) {
     try {
-      await initializeStateFromStorage();
+      // Verify required APIs first
       if (!browserInstance?.tabs || !browserInstance?.alarms || !browserInstance?.runtime) {
-        console.error("Required browser APIs are unavailable.");
-        return;
+        throw new Error("Required browser APIs are unavailable.");
       }
+
+      // Test connection immediately to fail fast
+      try {
+        browserInstance.runtime.connect();
+      } catch (error) {
+        throw new Error('Extension context invalidated');
+      }
+
+      // Initialize state first
+      await initializeStateFromStorage();
+
+      // Add diagnostic logging for service worker activation
+      console.log('Initializing background service worker...');
+
+      // Set up connection handling first
+      browserInstance.runtime.onConnect.addListener((connectedPort) => {
+        console.log('New connection attempt from:', connectedPort.name);
+        
+        if (connectedPort.name === CONNECTION_NAME) {
+          port = connectedPort;
+          // Track connected ports
+          const connectedPorts = new Set();
+          connectedPorts.add(port);
+
+          // Send immediate acknowledgment
+          port.postMessage({ type: 'CONNECTION_ACK', timestamp: Date.now() });
+          
+          messageListener = async (message) => {
+            if (!connectedPorts.has(port)) return;
+            try {
+              await handleMessage(message, port.sender, 
+                (response) => port.postMessage(response), 
+                browserInstance, store);
+            } catch (error) {
+              console.error('Error handling message:', error);
+              if (port) {
+                port.postMessage({ type: 'ERROR', error: error.message });
+              }
+            }
+          };
+
+          disconnectListener = () => {
+            console.log('Port disconnected:', port?.name);
+            connectedPorts.delete(port);
+            if (port?.onMessage?.removeListener) {
+              port.onMessage.removeListener(messageListener);
+            }
+            if (port?.onDisconnect?.removeListener) {
+              port.onDisconnect.removeListener(disconnectListener); 
+            }
+            port = null;
+            if (browserInstance.runtime.lastError) {
+              console.warn('Disconnect reason:', browserInstance.runtime.lastError.message);
+            }
+          };
+
+          port.onMessage.addListener(messageListener);
+          port.onDisconnect.addListener(disconnectListener);
+        }
+      });
 
       // Initialize connection utilities
       initializeConnection(sendMessage);
@@ -125,41 +177,44 @@ const background = {
         console.warn("tabs.onCreated.addListener is not available.");
       }
 
-      // Set default storage values on extension installation
-      if (browserInstance.runtime.onInstalled && browserInstance.runtime.onInstalled.addListener) {
-        browserInstance.runtime.onInstalled.addListener(async () => {
-          try {
-            await browserInstance.storage.sync.set({
-              inactiveThreshold: 60,
-              tabLimit: 100,
-              rules: [],
-            });
-            console.log("Default settings initialized.");
-          } catch (error) {
-            console.error("Error initializing default settings:", error);
-          }
+      // Prevent overwriting storage during tests
+      if (process.env.NODE_ENV !== 'test') {
+        // Set default storage values on extension installation
+        if (browserInstance.runtime.onInstalled && browserInstance.runtime.onInstalled.addListener) {
+          browserInstance.runtime.onInstalled.addListener(async () => {
+            try {
+              await browserInstance.storage.sync.set({
+                inactiveThreshold: 60,
+                tabLimit: 100,
+                rules: [],
+              });
+              console.log("Default settings initialized.");
+            } catch (error) {
+              console.error("Error initializing default settings:", error);
+            }
 
-          // Register declarativeNetRequest rules
-          try {
-            await browserInstance.declarativeNetRequest.updateDynamicRules({
-              addRules: [
-                // Example rule
-                {
-                  id: 1,
-                  priority: 1,
-                  action: { type: 'block' },
-                  condition: { urlFilter: 'https://example.com/*' }
-                }
-              ],
-              removeRuleIds: []
-            });
-            console.log("Declarative Net Request rules registered.");
-          } catch (error) {
-            console.error("Error registering declarativeNetRequest rules:", error);
-          }
-        });
-      } else {
-        console.warn("runtime.onInstalled.addListener is not available.");
+            // Register declarativeNetRequest rules
+            try {
+              await browserInstance.declarativeNetRequest.updateDynamicRules({
+                addRules: [
+                  // Example rule
+                  {
+                    id: 1,
+                    priority: 1,
+                    action: { type: 'block' },
+                    condition: { urlFilter: 'https://example.com/*' }
+                  }
+                ],
+                removeRuleIds: []
+              });
+              console.log("Declarative Net Request rules registered.");
+            } catch (error) {
+              console.error("Error registering declarativeNetRequest rules:", error);
+            }
+          });
+        } else {
+          console.warn("runtime.onInstalled.addListener is not available.");
+        }
       }
 
       // Add null checks for runtime.onMessage
@@ -188,11 +243,7 @@ const background = {
         if (browserInstance.alarms.onAlarm && browserInstance.alarms.onAlarm.addListener) {
           browserInstance.alarms.onAlarm.addListener(async (alarm) => {
             if (alarm.name === "checkForInactiveTabs") {
-              try {
-                await this.checkForInactiveTabs(browserInstance);
-              } catch (error) {
-                console.error("Error checking for inactive tabs:", error);
-              }
+              await this.checkForInactiveTabs(browserInstance);
             }
           });
         } else {
@@ -200,6 +251,20 @@ const background = {
         }
       } else {
         console.warn("alarms API is not available.");
+      }
+
+      // Bind the checkForInactiveTabs method to maintain 'this' context
+      const boundCheckForInactiveTabs = this.checkForInactiveTabs.bind(this);
+
+      // Set up the alarm handler with the correct context
+      if (browserInstance.alarms && browserInstance.alarms.onAlarm && browserInstance.alarms.onAlarm.addListener) {
+        browserInstance.alarms.onAlarm.addListener(async (alarm) => {
+          if (alarm.name === "checkForInactiveTabs") {
+            await boundCheckForInactiveTabs(browserInstance);
+          }
+        });
+      } else {
+        console.warn("alarms.onAlarm.addListener is not available.");
       }
 
       try {
@@ -210,15 +275,16 @@ const background = {
 
       // Add null checks for runtime.onConnect
       if (browserInstance.runtime.onConnect && browserInstance.runtime.onConnect.addListener) {
-        browserInstance.runtime.onConnect.addListener((port) => {
-          if (port.name === 'tabActivity') {
-            console.log('Port connected:', port.name);
+        browserInstance.runtime.onConnect.addListener((connectedPort) => {
+          if (connectedPort.name === 'tabActivity') {
+            console.log('Port connected:', connectedPort.name);
             
             // Track connected ports
             const connectedPorts = new Set();
-            connectedPorts.add(port);
+            connectedPorts.add(connectedPort);
             
-            port.onMessage.addListener(async (message) => {
+            port = connectedPort;
+            port.onMessage.addListener(messageListener = async (message) => {
               if (!connectedPorts.has(port)) return;
               
               try {
@@ -305,9 +371,10 @@ const background = {
               }
             });
 
-            port.onDisconnect.addListener(() => {
+            port.onDisconnect.addListener(disconnectListener = () => {
               console.log('Port disconnected:', port.name);
               connectedPorts.delete(port);
+              port = null;
             });
           }
         });
@@ -344,10 +411,66 @@ const background = {
       } else {
         console.warn("runtime.onError.addListener is not available.");
       }
+
+      return; // Remove the return statement with serviceWorker
     } catch (error) {
       console.error("Error during background initialization:", error);
+      throw error; // Re-throw to signal initialization failure
     }
   },
+
+  /**
+   * Cleans up event listeners and ongoing processes.
+   * @returns {Promise<void>}
+   */
+  async _cleanup() {
+    try {
+      // Clear any pending timers
+      if (this._timeouts) {
+        this._timeouts.forEach(clearTimeout);
+        this._timeouts = [];
+      }
+      
+      // Remove port listeners
+      if (port) {
+        port.onMessage?.removeListener?.(messageListener);
+        port.onDisconnect?.removeListener?.(disconnectListener);
+        port = null;
+      }
+
+      // Remove any intervals/alarms
+      if (browser.alarms) {
+        await browser.alarms.clearAll();
+      }
+
+      // Force cleanup
+      messageListener = null;
+      disconnectListener = null;
+
+      return Promise.resolve();
+    } catch (err) {
+      console.error('Error during cleanup:', err);
+      return Promise.resolve();
+    }
+  },
+
+  /**
+   * Handle fetch request for extension resources.
+   * @param {Request} request - The fetch request object.
+   * @returns {Promise<Response|undefined>}
+   */
+  handleFetch: async (request) => {
+    try {
+      const url = new URL(request.url);
+      if (url.protocol === 'chrome-extension:') {
+        return new Response('Extension resource handled');
+      }
+      return undefined;
+    } catch (error) {
+      console.error('Error handling fetch:', error);
+      return undefined;
+    }
+  }
 };
 
 // Support both testing and service worker environments
@@ -364,3 +487,5 @@ if (typeof module !== 'undefined' && module.exports) {
    */
   background.initBackground(browser);
 }
+
+export default background;

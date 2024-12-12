@@ -6,6 +6,15 @@
  */
 import browser from 'webextension-polyfill';
 import { queryTabs, getTab } from '../utils/tabManager.js';
+import { initializeConnection, sendMessage } from '../utils/messagingUtils.js';
+
+// Initialize connection to background script
+initializeConnection(async (message) => {
+  if (message.type === 'CONNECTION_ACK') {
+    console.log('Connection established');
+    await loadTabs(); // Reload tabs after connection is established
+  }
+});
 
 /**
  * Initializes the popup controller for TabCurator.
@@ -21,7 +30,7 @@ function initPopup() {
    */
   async function loadTabs() {
     try {
-      const tabs = await queryTabs({});
+      const tabs = await browser.tabs.query({});
       const tabList = document.getElementById('tab-list');
       if (!tabList) {
         console.error('Tab list element not found');

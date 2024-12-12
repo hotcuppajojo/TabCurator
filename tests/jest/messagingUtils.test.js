@@ -27,8 +27,14 @@ describe('Messaging Utils', () => {
     
     // Setup mock port
     mockPort = {
-      onMessage: { addListener: jest.fn() },
-      onDisconnect: { addListener: jest.fn() },
+      onMessage: { 
+        addListener: jest.fn(),
+        removeListener: jest.fn(), // Add removeListener
+      },
+      onDisconnect: { 
+        addListener: jest.fn(),
+        removeListener: jest.fn(), // Add removeListener
+      },
       postMessage: jest.fn(),
       name: 'content-connection'
     };
@@ -53,21 +59,36 @@ describe('Messaging Utils', () => {
     console.log = jest.fn();
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
+  afterEach(async () => {
+    jest.runOnlyPendingTimers(); // Run any pending timers
+    jest.useRealTimers(); // Restore real timers
+    jest.clearAllTimers(); // Clear all timers to prevent leaks
+    await _cleanup(); // Ensure message queue and connections are cleared
+    
+    // Unreference any active timers explicitly if created
+    // Example:
+    // if (timer) {
+    //   timer.unref();
+    // }
   });
 
   describe('Connection Management', () => {
     test('should initialize connection with correct port name', () => {
       initializeConnection(jest.fn());
       expect(browser.runtime.connect).toHaveBeenCalledWith({ name: 'content-connection' });
-    });
+    });   
 
     test('should handle connection errors and retry', async () => {
       const error = new Error('Connection failed');
       const secondMockPort = {
-        onMessage: { addListener: jest.fn() },
-        onDisconnect: { addListener: jest.fn() },
+        onMessage: { 
+          addListener: jest.fn(),
+          removeListener: jest.fn(), // Add removeListener
+        },
+        onDisconnect: { 
+          addListener: jest.fn(),
+          removeListener: jest.fn(), // Add removeListener
+        },
         postMessage: jest.fn(),
         name: 'content-connection'
       };
@@ -163,8 +184,8 @@ describe('Messaging Utils', () => {
       jest.useFakeTimers();
     });
 
-    afterEach(() => {
-      _cleanup(); // Now _cleanup is properly imported
+    afterEach(async () => {
+      await _cleanup(); // Now _cleanup is properly imported
       jest.useRealTimers();
     });
 
@@ -195,8 +216,14 @@ describe('Messaging Utils', () => {
 
       // Create second port for reconnection
       const secondMockPort = {
-        onMessage: { addListener: jest.fn() },
-        onDisconnect: { addListener: jest.fn() },
+        onMessage: { 
+          addListener: jest.fn(),
+          removeListener: jest.fn(), // Add removeListener
+        },
+        onDisconnect: { 
+          addListener: jest.fn(),
+          removeListener: jest.fn(), // Add removeListener
+        },
         postMessage: jest.fn(),
         name: 'content-connection'
       };
@@ -206,6 +233,8 @@ describe('Messaging Utils', () => {
       // Advance timers and process microtasks
       jest.advanceTimersByTime(RETRY_DELAY);
       await Promise.resolve();
+
+      
 
       // Simulate connection acknowledgment
       const messageHandler = secondMockPort.onMessage.addListener.mock.calls[0][0];

@@ -24,8 +24,11 @@ module.exports = (env) => {
           test: /\.(js|jsx)$/,
           exclude: /node_modules/,
           use: {
-            loader: 'babel-loader'
-          }
+            loader: 'babel-loader',
+            options: {
+              presets: ['@babel/preset-react', '@babel/preset-env'],
+            },
+          },
         }
       ]
     },
@@ -38,7 +41,6 @@ module.exports = (env) => {
           { from: 'src/popup/popup.html', to: 'popup/popup.html' },
           { from: 'src/options/options.html', to: 'options/options.html' },
           { from: 'rules', to: 'rules' },
-          // ...existing patterns...
         ]
       })
     ],

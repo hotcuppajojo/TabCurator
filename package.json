@@ -7,28 +7,33 @@
     "package-chrome-release": "zip -r build/chrome-extension.zip build/chrome/",
     "package-firefox-release": "zip -r build/firefox-extension.zip build/firefox/",
     "package-safari-release": "zip -r build/safari-extension.zip build/safari/",
-    "test": "jest --config jest.config.js",
+    "test": "jest --config jest.config.js --detectOpenHandles",
     "build": "webpack --mode production",
-    "jest:clearCache": "jest --clearCache"
+    "jest:clearCache": "jest --clearCache",
+    "build:chrome": "webpack --config webpack.config.js && cp -r browsers/chrome/* build/chrome/"
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",
     "@babel/plugin-transform-runtime": "^7.25.9",
     "@babel/preset-env": "^7.26.0",
     "@babel/preset-react": "^7.14.5",
+    "@jest/globals": "^29.7.0",
+    "@playwright/test": "^1.49.1",
+    "@types/jest": "^29.5.2",
     "babel-jest": "^29.7.0",
     "babel-loader": "^8.2.2",
     "copy-webpack-plugin": "^6.4.1",
     "core-js": "^3.39.0",
     "fs-extra": "^11.2.0",
+    "identity-obj-proxy": "^3.0.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
     "playwright": "^1.48.2",
+    "service-worker-mock": "^2.0.5",
     "webpack": "^5.97.1",
     "webpack-cli": "^4.7.2"
   },
   "dependencies": {
-    "@playwright/test": "^1.48.2",
     "preset-react": "^1.0.0",
     "react": "^17.0.2",
     "react-dom": "^17.0.2",
@@ -42,8 +47,12 @@
     ]
   },
   "jest": {
-    "moduleNameMapper": {
-      "^@utils/(.*)$": "<rootDir>/src/utils/$1"
-    }
+    "testTimeout": 60000,
+    "maxConcurrency": 1,
+    "setupFilesAfterEnv": [
+      "<rootDir>/jest.setup.js",
+      "<rootDir>/jest.memory-setup.js",
+      "<rootDir>/tests/jest/setup/async-cleanup.js"
+    ]
   }
 }

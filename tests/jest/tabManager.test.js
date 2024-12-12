@@ -29,6 +29,10 @@ describe("Tab Manager", () => {
     });
   });
 
+  afterEach(async () => {
+    jest.clearAllTimers(); // Stop timers to prevent further processing
+  });
+
   describe('Tab Operations', () => {
     describe('queryTabs', () => {
       test("should query tabs with provided options", async () => {
