@@ -6,7 +6,6 @@ import { persistStore, persistReducer, PersistConfig } from 'redux-persist';
 import storage from 'redux-persist/lib/storage'; // or another storage adapter
 import { combineReducers, Reducer, Action } from 'redux'; // Updated import to use Action
 import { createSelector } from 'reselect';
-import { isTaggingPromptActive } from './tagUtils';
 import { 
   TAB_STATES, 
   MESSAGE_TYPES, 
@@ -91,7 +90,7 @@ const initialState: AppState = {
   isTaggingPromptActive: false,
   declarativeRules: [],
   serviceWorker: {
-    type: SERVICE_TYPES.WORKER, // Changed from 'worker' to SERVICE_TYPES.WORKER
+    type: SERVICE_TYPES.WORKER, // Ensure SERVICE_TYPES.WORKER is correctly defined as "WORKER"
     isActive: false,
     lastSync: 0,
   },
@@ -215,8 +214,22 @@ const rootReducer: Reducer<AppState, Action> = combineReducers({
   archivedTabs: archivedTabsSlice.reducer,
   tabActivity: tabActivitySlice.reducer,
   savedSessions: savedSessionsSlice.reducer,
-  ui: uiSlice.reducer,
-  declarativeRules: rulesSlice.reducer,
+  // Flatten isTaggingPromptActive from uiSlice
+  isTaggingPromptActive: uiSlice.reducer.setTaggingPrompt, // Use the appropriate reducer for isTaggingPromptActive
+  declarativeRules: rulesSlice.reducer, // Ensure this maps correctly
+  serviceWorker: (state = initialState.serviceWorker, action) => {
+    switch (action.type) {
+      case ACTION_TYPES.STATE.INITIALIZE:
+        return {
+          ...state,
+          type: action.payload.type,
+          isActive: action.payload.isActive,
+          lastSync: action.payload.lastSync,
+        };
+      default:
+        return state;
+    }
+  },
 });
 
 // Persist configuration
@@ -236,7 +249,7 @@ const persistConfig: PersistConfig<AppState, any, any, any> = {
   },
   whitelist: ['tabs', 'sessions', 'rules', 'declarativeRules'],
   serialize: true,
-  deserialize: true,
+  // deserialize: true, // Removed this line
 };
 
 // Create persisted reducer
@@ -256,10 +269,12 @@ const store = configureStore({
 // Persistor
 const persistor = persistStore(store);
 
-// Consolidate selectors
-const createTabSelector = (selector: (state: AppState) => any) => 
-  createSelector([selector], (data) => data);
+// Ensure selectors are declared before use
+const selectTabs = (state: AppState) => state.tabs;
+const selectArchivedTabs = (state: AppState) => state.archivedTabs;
+const selectTabActivity = (state: AppState) => state.tabActivity;
 
+// Consolidate selectors
 export const {
   selectTabs,
   selectArchivedTabs,
@@ -268,21 +283,24 @@ export const {
   selectInactiveTabs,
   selectMatchingRules,
 } = {
-  selectTabs: createTabSelector((state) => state.tabs),
-  selectArchivedTabs: createTabSelector((state) => state.archivedTabs),
-  selectTabActivity: createTabSelector((state) => state.tabActivity),
+  selectTabs: createTabSelector(selectTabs),
+  selectArchivedTabs: createTabSelector(selectArchivedTabs),
+  selectTabActivity: createTabSelector(selectTabActivity),
   selectActiveTabs: createSelector([selectTabs], (tabs) => 
     tabs.filter(tab => tab.active)
   ),
   selectInactiveTabs: createSelector(
     [selectTabActivity, selectTabs],
-    (activity, tabs) => tabs.filter(tab => {
-      const lastAccessed = activity[tab.id]?.lastAccessed || Date.now();
-      return (now - lastAccessed) > INACTIVITY_THRESHOLDS.PROMPT;
-    })
+    (activity, tabs) => {
+      const now = Date.now(); // Define 'now'
+      return tabs.filter(tab => {
+        const lastAccessed = activity[tab.id]?.lastAccessed || now;
+        return (now - lastAccessed) > INACTIVITY_THRESHOLDS.PROMPT;
+      });
+    }
   ),
   selectMatchingRules: createSelector(
-    [(state) => state.declarativeRules, (_, url: string) => url],
+    [(state: AppState) => state.declarativeRules, (_: AppState, url: string) => url],
     (rules, url) => rules.filter(rule => 
       new RegExp(rule.condition.urlFilter.replace(/\*/g, '.*')).test(url)
     )
@@ -351,3 +369,6 @@ export const batchProcessor = {
     }
   }
 };
+
+// Define AppDispatch
+export type AppDispatch = typeof store.dispatch;
