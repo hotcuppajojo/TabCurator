@@ -18,7 +18,7 @@ function cleanBuild() {
 // Copy source files to build directory
 function copySource() {
   fs.copySync(SRC_DIR, BUILD_DIR, {
-    filter: (src) => !src.includes('manifest.json')
+    filter: (src) => !src.includes('manifest.json') && !src.includes('public') // Adjusted filter
   });
 }
 

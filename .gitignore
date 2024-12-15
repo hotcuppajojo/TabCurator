@@ -5,6 +5,7 @@ yarn-error.log
 
 # Build directories for different browsers
 build/
+# public/  # Comment out or remove if needed
 dist/
 
 # Ignore generated files for each browser package

@@ -1,6 +1,5 @@
 // tests/jest/messagingUtils.test.js
 
-const browser = require('webextension-polyfill');
 const { 
   handleMessage, 
   initializeConnection, 

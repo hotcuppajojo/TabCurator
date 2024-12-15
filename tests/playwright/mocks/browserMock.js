@@ -6,14 +6,36 @@
  * @param {import('@playwright/test').Page} page - The Playwright page instance.
  */
 const injectBrowserMock = async (page) => {
-  // Ensure the mock is injected before any other scripts
+  // Inject the mock before other scripts run in the page
   await page.addInitScript(() => {
     console.log('Injecting browser mock...');
 
-    // Define mock function creator with proper tracking
+    // Allow chrome-extension:// requests without interference
+    const originalFetch = window.fetch;
+    window.fetch = async (input, init) => {
+      if (typeof input === 'string' && input.startsWith('chrome-extension://')) {
+        return originalFetch(input, init);
+      }
+      return originalFetch(input, init);
+    };
+
+    // Ensure XMLHttpRequest does not block chrome-extension:// URLs
+    const originalXHR = window.XMLHttpRequest;
+    window.XMLHttpRequest = function() {
+      const xhr = new originalXHR();
+      const originalOpen = xhr.open;
+      xhr.open = function(method, url, async, user, password) {
+        if (url.startsWith('chrome-extension://')) {
+          return originalOpen.call(this, method, url, async, user, password);
+        }
+        return originalOpen.apply(this, arguments);
+      };
+      return xhr;
+    };
+
     function createMockFn(defaultImplementation) {
       function mockFn(...args) {
-        console.log(`Mock function called with args:`, args);
+        console.log('Mock function called with args:', args);
         mockFn.mock.calls.push([...args]);
         try {
           if (typeof mockFn.implementation === 'function') {
@@ -26,14 +48,12 @@ const injectBrowserMock = async (page) => {
         }
       }
       
-      mockFn.mock = { calls: [], listeners: [] }; // Added 'listeners' array
+      mockFn.mock = { calls: [], listeners: [] };
       mockFn.implementation = null;
-      mockFn.shouldFail = false; // Added to control failure simulation
-      
+      mockFn.shouldFail = false;
       return mockFn;
     }
 
-    // Replace jest.fn with custom mock function
     function createCustomMockFn(impl) {
       const calls = [];
       const mockFn = (...args) => {
@@ -43,11 +63,11 @@ const injectBrowserMock = async (page) => {
         }
       };
       mockFn.mock = { calls };
-      mockFn.shouldFail = false; // Control failure simulation
+      mockFn.shouldFail = false;
       return mockFn;
     }
 
-    // Initialize the browser mock with proper implementations
+    // Initialize window.browser mock
     window.browser = {
       storage: {
         sync: {
@@ -56,23 +76,22 @@ const injectBrowserMock = async (page) => {
             const defaultData = {
               inactiveThreshold: '60',
               tabLimit: '100',
-              rules: [] // Include rules in the default data
+              rules: []
             };
             const result = {};
-            
+
             if (Array.isArray(keys)) {
               keys.forEach(key => {
                 result[key] = defaultData[key];
               });
             } else if (typeof keys === 'object') {
-              Object.keys(keys).forEach(key => {
-                result[key] = defaultData[key] || keys[key];
-              });
+              for (const k in keys) {
+                result[k] = defaultData[k] || keys[k];
+              }
             }
-            
+
             setTimeout(() => callback(result), 0);
           }),
-          
           set: createMockFn((items, callback) => {
             console.log('Mock storage.sync.set called with:', items);
             setTimeout(() => {
@@ -113,7 +132,8 @@ const injectBrowserMock = async (page) => {
           }
           return Promise.resolve({ success: true });
         }),
-        onInstalled: { addListener: createMockFn() } // Add onInstalled mock
+        onInstalled: { addListener: createMockFn() },
+        onStartup: { addListener: createMockFn() }
       },
       tabs: {
         create: createMockFn((options, callback) => {
@@ -139,26 +159,25 @@ const injectBrowserMock = async (page) => {
       alarms: {
         create: createMockFn(),
         onAlarm: { addListener: createMockFn() }
+      },
+      declarativeNetRequest: {
+        updateDynamicRules: createMockFn(),
+        getDynamicRules: createMockFn(() => [])
       }
     };
 
-    // Ensure that alarms API is fully mocked
+    // Ensure alarms API is fully mocked (redundant as we redefined above, but kept for clarity)
     window.browser.alarms = {
       create: createMockFn(),
       onAlarm: { addListener: createMockFn() }
     };
 
-    // Remove or comment out any serviceWorkers mocks
-    // window.browser.serviceWorkers = {
-    //   register: createMockFn(),
-    //   // ...other serviceWorker mocks...
-    // };
+    // We have already removed serviceWorker mocks
 
-    // Add logging to mock functions
     const originalSendMessage = window.browser.runtime.sendMessage;
     window.browser.runtime.sendMessage = (...args) => {
       console.log('runtime.sendMessage called with:', args);
-      return originalSendMessage.apply(this, args);
+      return originalSendMessage.apply(window.browser.runtime, args);
     };
 
     // Ensure chrome alias
@@ -168,7 +187,6 @@ const injectBrowserMock = async (page) => {
     window.testHelpers = {
       resetMocks() {
         console.log('Resetting mocks...');
-        // Recursive function to reset mocks
         function resetMockCalls(obj) {
           for (const key in obj) {
             if (typeof obj[key] === 'function' && obj[key].mock) {
@@ -210,22 +228,21 @@ const injectBrowserMock = async (page) => {
     console.log('Browser mock injected successfully.');
   });
 
-  // **Re-enable console event handler for debugging**
-  // Attach console event handler for debugging
+  // Setup console event handler for page logs
   page.on('console', msg => {
-    for (let i = 0; i < msg.args().length; ++i) {
+    for (let i = 0; i < msg.args().length; i++) {
       msg.args()[i].jsonValue().then(val => {
         console.log(`PAGE LOG: ${val}`);
       });
     }
   });
 
-  // Remove any accidentally inserted lines unrelated to browser mocking.
+  // Log current pages and service workers for debugging
+  const pages = await page.context().pages();
+  console.log('Current Pages:', pages.map(p => p.url()));
 
-  // Example:
-  // Remove lines like:
-  // await page.waitForFunction(() => !!window.popupInstance, { timeout: 5000 });
-  // timeout: 5000, // Example reduction from a higher value to 5 seconds
+  const serviceWorkers = await page.context().serviceWorkers();
+  console.log('Current Service Workers:', serviceWorkers.map(sw => sw.url()));
 };
 
-module.exports = { injectBrowserMock };
+export { injectBrowserMock };

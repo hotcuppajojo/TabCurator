@@ -4,19 +4,14 @@ module.exports = {
   // Ensures DOM manipulation is possible in tests without a browser
   testEnvironment: "jest-environment-jsdom",
   // Focuses on JS testing only to optimize speed and simplify setup
-  moduleFileExtensions: ["js"],
+  moduleFileExtensions: ["js", "jsx", "ts", "tsx"],
   // Isolates test files from source code for cleaner architecture
   roots: ["<rootDir>/tests"],
   // Enforces consistent test naming for automated discovery
   testMatch: ["<rootDir>/tests/jest/**/*.test.js"],
   transform: {
     // Enables modern JS features while maintaining compatibility
-    '^.+\\.(js|jsx)$': ['babel-jest', {
-      presets: [
-        ['@babel/preset-env', { targets: { node: 'current' } }]
-      ],
-      plugins: ['@babel/plugin-transform-modules-commonjs']
-    }]
+    '^.+\\.(js|jsx|ts|tsx)$': 'babel-jest',
   },
   // Use single setup file
   setupFilesAfterEnv: ["<rootDir>/jest.setup.js"],

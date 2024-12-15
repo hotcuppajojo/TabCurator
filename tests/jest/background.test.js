@@ -59,10 +59,8 @@ jest.mock('../../src/utils/messagingUtils.js', () => {
     ...originalModule,
     handleMessage: jest.fn(),
     createAlarm: jest.fn(),
-    onAlarm: jest.fn((callback, browserInstance) => {
-      // Store the callback for later use
-      browserInstance.alarms.onAlarm.addListener(callback);
-    }),
+    onAlarm: jest.fn(),
+    // Add any additional mocks if necessary
   };
 });
 

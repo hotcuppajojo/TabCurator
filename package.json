@@ -1,7 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
+  "type": "module",
   "scripts": {
-    "build-chrome": "node build-scripts/build-chrome.js",
+    "build-chrome": "node build-scripts/build-chrome.mjs",
     "build-firefox": "node build-scripts/build-firefox.js",
     "build-safari": "node build-scripts/build-safari.js",
     "package-chrome-release": "zip -r build/chrome-extension.zip build/chrome/",
@@ -10,19 +11,22 @@
     "test": "jest --config jest.config.js --detectOpenHandles",
     "build": "webpack --mode production",
     "jest:clearCache": "jest --clearCache",
-    "build:chrome": "webpack --config webpack.config.js && cp -r browsers/chrome/* build/chrome/"
+    "build:chrome": "webpack --config webpack.config.js && cp -r browsers/chrome/* build/chrome/",
+    "test:playwright": "playwright test --config playwright.config.js",
+    "build:service-worker": "webpack --config webpack.service-worker.js"
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",
     "@babel/plugin-transform-runtime": "^7.25.9",
     "@babel/preset-env": "^7.26.0",
-    "@babel/preset-react": "^7.14.5",
+    "@babel/preset-react": "^7.26.3",
     "@jest/globals": "^29.0.0",
     "@playwright/test": "^1.49.1",
     "@types/jest": "^29.5.2",
+    "@types/reselect": "^2.0.27",
     "babel-jest": "^29.7.0",
-    "babel-loader": "^8.2.2",
-    "copy-webpack-plugin": "^6.4.1",
+    "babel-loader": "^8.4.1",
+    "copy-webpack-plugin": "^12.0.2",
     "core-js": "^3.39.0",
     "fs-extra": "^11.2.0",
     "identity-obj-proxy": "^3.0.0",
@@ -34,9 +38,14 @@
     "webpack-cli": "^4.7.2"
   },
   "dependencies": {
+    "@reduxjs/toolkit": "^1.9.5",
     "preset-react": "^1.0.0",
     "react": "^17.0.2",
     "react-dom": "^17.0.2",
+    "redux": "^5.0.1",
+    "redux-persist": "^6.0.0",
+    "redux-thunk": "^3.1.0",
+    "reselect": "^5.1.1",
     "terser": "^5.36.0",
     "webextension-polyfill": "^0.12.0"
   },

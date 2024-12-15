@@ -4,7 +4,6 @@
  * Handles user preferences, rule configuration, and validation.
  * Provides browser-agnostic storage operations for cross-browser compatibility.
  */
-import browser from 'webextension-polyfill';
 
 /**
  * Loads user preferences from browser storage.

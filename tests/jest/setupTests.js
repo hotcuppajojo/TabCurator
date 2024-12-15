@@ -1,5 +1,8 @@
 // tests/jest/setupTests.js
 
+import { jest } from '@jest/globals';
+import '@testing-library/jest-dom/extend-expect';
+
 const { createMockBrowser } = require('./mocks/browserMock.js');
 
 // Update global mock setup for consolidated modules
@@ -17,6 +20,16 @@ global.self = {
   addEventListener: jest.fn(),
   removeEventListener: jest.fn(),
 };
+
+// Initialize browser mocks
+beforeAll(() => {
+  // ...existing mock setups...
+});
+
+afterEach(() => {
+  // ...existing cleanup code...
+  jest.clearAllMocks();
+});
 
 afterAll(() => {
   jest.useRealTimers(); // Ensure real timers are used globally
