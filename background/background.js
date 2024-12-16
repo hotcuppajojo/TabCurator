@@ -77,6 +77,7 @@ import {
   ERROR_CATEGORIES,
   STORAGE_CONFIG
 } from '../utils/constants.js';
+import { logger } from '../utils/logger.js';
 
 // Initialize connection manager
 let isInitialized = false;
@@ -331,6 +332,45 @@ const telemetryAggregator = {
   flushThreshold: CONFIG.BATCH.FLUSH_SIZE,
   aggregationWindow: CONFIG.TELEMETRY.FLUSH_INTERVAL,
 
+  // Add peak load tracking
+  peakLoads: new Map(),
+  
+  trackMetric(category, value, context = {}) {
+    const timestamp = Date.now();
+    const window = Math.floor(timestamp / 60000); // 1-minute windows
+    
+    const peak = this.peakLoads.get(category) || {
+      value: 0,
+      timestamp: 0,
+      window
+    };
+    
+    if (value > peak.value || window > peak.window) {
+      this.peakLoads.set(category, {
+        value,
+        timestamp,
+        window
+      });
+      
+      // Log significant peaks
+      if (value > peak.value * 1.5) { // 50% increase
+        logger.warn('Significant load increase detected', {
+          category,
+          previousPeak: peak.value,
+          newPeak: value,
+          context
+        });
+      }
+    }
+    
+    // Add to regular metrics
+    this.addEvent(category, 'metric', {
+      value,
+      timestamp,
+      ...context
+    });
+  },
+
   addEvent(category, event, data = {}) {
     const key = `${category}_${event}`;
     const existing = this.buffer.get(key) || {
@@ -362,19 +402,89 @@ const telemetryAggregator = {
     }
   },
 
+  // Enhanced flush with error tracking
   async flush(key = null) {
-    const toFlush = key ? [key] : Array.from(this.buffer.keys());
+    const flushStart = performance.now();
+    const errors = [];
     
-    for (const k of toFlush) {
-      const data = this.buffer.get(k);
-      if (data) {
-        await telemetryTracker.logEvent(k.split('_')[0], 'aggregate', {
-          ...data,
-          average: data.sum / data.count,
-          timestamp: Date.now()
-        });
-        this.buffer.delete(k);
+    try {
+      const toFlush = key ? [key] : Array.from(this.buffer.keys());
+      
+      for (const k of toFlush) {
+        try {
+          const data = this.buffer.get(k);
+          if (!data) continue;
+
+          await telemetryTracker.logEvent(k.split('_')[0], 'aggregate', {
+            ...data,
+            average: data.sum / data.count,
+            timestamp: Date.now(),
+            peakLoad: this.peakLoads.get(k)?.value || 0
+          });
+          
+          this.buffer.delete(k);
+        } catch (error) {
+          errors.push({ key: k, error: error.message });
+          logger.error('Failed to flush telemetry key', {
+            key: k,
+            error: error.message,
+            type: 'TELEMETRY_FLUSH'
+          });
+        }
       }
+    } finally {
+      const duration = performance.now() - flushStart;
+      logger.debug('Telemetry flush completed', {
+        duration,
+        errorCount: errors.length,
+        entriesFlushed: toFlush?.length || 0
+      });
+    }
+  },
+
+  // Add enhanced telemetry aggregation with retries
+  async flushWithRetry(options = {}) {
+    const {
+      maxAttempts = CONFIG.RETRY.MAX_ATTEMPTS,
+      baseDelay = CONFIG.RETRY.BACKOFF_BASE
+    } = options;
+
+    let attempt = 0;
+    while (attempt < maxAttempts) {
+      try {
+        await this.flush();
+        return;
+      } catch (error) {
+        attempt++;
+        if (attempt === maxAttempts) {
+          // Store failed telemetry for later recovery
+          await this._persistFailedTelemetry();
+          throw error;
+        }
+        
+        const delay = baseDelay * Math.pow(2, attempt) * (0.75 + Math.random() * 0.5);
+        logger.warn('Telemetry flush failed, retrying', {
+          attempt,
+          nextRetry: delay,
+          error: error.message
+        });
+        
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  },
+
+  async _persistFailedTelemetry() {
+    try {
+      const failedData = Array.from(this.buffer.entries());
+      await browser.storage.local.set({
+        ['failed_telemetry']: {
+          data: failedData,
+          timestamp: Date.now()
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to persist telemetry', { error });
     }
   }
 };
@@ -574,6 +684,11 @@ async function initialize() {
  */
 async function handleMessage(message, sender) {
   const startTime = performance.now();
+  const context = {
+    messageType: message?.type,
+    senderId: sender?.id,
+    timestamp: Date.now()
+  };
   
   try {
     validateMessage(message);
@@ -583,37 +698,71 @@ async function handleMessage(message, sender) {
     
     // Track performance
     const duration = performance.now() - startTime;
+    telemetryAggregator.trackMetric('messageProcessing', duration, context);
+
+    // Check for threshold breaches
     if (duration > CONFIG.METRICS.THRESHOLDS.MESSAGE_PROCESSING) {
-      connection.logPerformance('messageProcessing', duration, { 
-        type: message.type 
+      logger.warn('Message processing threshold exceeded', {
+        ...context,
+        duration,
+        threshold: CONFIG.METRICS.THRESHOLDS.MESSAGE_PROCESSING
       });
     }
 
     return response;
   } catch (error) {
-    connection.logError(error, {
-      context: 'messageHandling',
-      messageType: message?.type
+    logger.error('Message handling failed', {
+      ...context,
+      error: error.message,
+      stack: error.stack,
+      duration: performance.now() - startTime
     });
     return { error: error.message };
   }
 }
 
-/**
- * Enhanced message router with telemetry
- * @param {Object} message - Incoming message
- * @param {string} message.type - Message type from MESSAGE_TYPES
- * @param {Object} message.payload - Message data
- * @param {Object} sender - Message sender information
- * @returns {Promise<Object>} Response data
- * @throws {Error} On invalid message or processing failure
- * 
- * @example
- * const response = await messageRouter({
- *   type: MESSAGE_TYPES.TAB_ACTION,
- *   payload: { action: 'suspend', tabId: 123 }
- * }, sender);
- */
+// Add state update schema validation
+const stateUpdateSchemas = {
+  tabUpdate: {
+    type: 'object',
+    required: ['id'],
+    properties: {
+      id: { type: 'number' },
+      title: { type: 'string' },
+      url: { type: 'string' },
+      status: { type: 'string' }
+    }
+  },
+  ruleUpdate: {
+    type: 'object',
+    required: ['id', 'condition', 'action'],
+    properties: {
+      id: { type: 'string' },
+      condition: { type: 'string' },
+      action: { type: 'string' }
+    }
+  }
+};
+
+const validateStatePayload = (type, payload) => {
+  const schema = stateUpdateSchemas[type];
+  if (!schema) {
+    throw new Error(`No validation schema for type: ${type}`);
+  }
+  
+  const validator = ajv.compile(schema);
+  if (!validator(payload)) {
+    logger.error('State validation failed', {
+      type,
+      errors: validator.errors,
+      payload
+    });
+    throw new Error(`Invalid state payload: ${JSON.stringify(validator.errors)}`);
+  }
+  return true;
+};
+
+// Enhance message router with validation
 async function messageRouter(message, sender) {
   logger.debug('Routing message', { 
     type: message.type, 
@@ -621,6 +770,11 @@ async function messageRouter(message, sender) {
   });
   
   try {
+    // Validate state updates before processing
+    if (message.type === MESSAGE_TYPES.STATE_UPDATE) {
+      validateStatePayload(message.payload.type, message.payload.data);
+    }
+
     switch (message.type) {
       case MESSAGE_TYPES.TAB_ACTION:
         return handleTabAction(message.payload, sender);
@@ -742,14 +896,21 @@ async function handleTabAction({ action, tabId, payload }, sender) {
  */
 async function handleStateUpdate(payload) {
   try {
+    validateStatePayload(payload.type, payload.data);
     await validateStateUpdate(payload.type, payload.data);
+    
     store.dispatch({
       type: payload.type,
       payload: payload.data
     });
+    
     return true;
   } catch (error) {
-    console.error('State update failed:', error);
+    logger.error('State update failed', {
+      type: payload.type,
+      error: error.message,
+      data: payload.data
+    });
     throw error;
   }
 }
@@ -984,68 +1145,78 @@ function handleSuspendCanceled() {
  * }
  */
 async function gracefulShutdown() {
+  const shutdownStart = performance.now();
   const errors = [];
   
+  logger.info('Initiating graceful shutdown...');
+  
+  const steps = [
+    {
+      name: 'flushTelemetry',
+      critical: true,
+      action: async () => {
+        logger.info('Flushing telemetry...');
+        // Use enhanced telemetry flushing with retries
+        await telemetryAggregator.flushWithRetry({
+          maxAttempts: CONFIG.RETRY.MAX_ATTEMPTS,
+          baseDelay: CONFIG.RETRY.BACKOFF_BASE
+        });
+      }
+    },
+    {
+      name: 'persistState',
+      critical: true,
+      action: async () => {
+        logger.info('Persisting state...');
+        const state = store.getState();
+        // Validate state before persistence
+        validateStatePayload('fullState', state);
+        await browser.storage.local.set({
+          lastKnownState: {
+            ...state,
+            _shutdownTimestamp: Date.now()
+          }
+        });
+      }
+    },
+    // ...existing shutdown steps...
+  ];
+
   try {
-    const shutdownStarted = Date.now();
-    logger.info('Initiating graceful shutdown...');
-    
-    // Execute shutdown steps with individual error handling
-    const steps = [
-      {
-        name: 'flushTelemetry',
-        action: async () => {
-          await telemetryAggregator.flush();
-          clearInterval(metricsInterval);
-        }
-      },
-      {
-        name: 'persistState',
-        action: async () => {
-          await store.persist();
-        }
-      },
-      {
-        name: 'cleanupConnections',
-        action: async () => {
-          await connection.shutdown();
+    for (const step of steps) {
+      try {
+        const stepStart = performance.now();
+        await step.action();
+        logger.debug(`Shutdown step completed: ${step.name}`, {
+          duration: performance.now() - stepStart
+        });
+      } catch (error) {
+        const errorContext = {
+          step: step.name,
+          error: error.message,
+          critical: step.critical
+        };
+        
+        logger.error('Shutdown step failed', errorContext);
+        errors.push(errorContext);
+        
+        if (step.critical) {
+          throw new Error(`Critical shutdown step failed: ${step.name}`);
         }
       }
-    ];
-
-    // Execute steps with timeout protection
-    await Promise.race([
-      executeShutdownSteps(steps, errors),
-      new Promise((_, reject) => {
-        shutdownTimer = setTimeout(() => {
-          reject(new Error('Shutdown timed out'));
-        }, CONFIG.TIMEOUTS.SHUTDOWN);
-      })
-    ]);
-
-    // Clear timeout if successful
-    if (shutdownTimer) {
-      clearTimeout(shutdownTimer);
     }
 
-    // Log shutdown results
-    const shutdownDuration = Date.now() - shutdownStarted;
-    logger.info(`Graceful shutdown completed`, { durationMs: shutdownDuration });
-    
-    // Report any non-critical errors
-    if (errors.length > 0) {
-      logger.warn('Non-critical shutdown errors occurred', { errors });
-    }
-  } catch (error) {
-    // Log critical shutdown failure
-    logger.critical('Critical shutdown failure', {
-      error,
-      errors,
-      context: 'shutdown'
+    const duration = performance.now() - shutdownStart;
+    logger.info('Graceful shutdown completed', {
+      duration,
+      errors: errors.length ? errors : undefined
     });
-    
-    // Attempt emergency cleanup
-    await emergencyCleanup();
+  } catch (error) {
+    logger.error('Graceful shutdown failed', {
+      duration: performance.now() - shutdownStart,
+      error: error.message,
+      errors
+    });
     throw error;
   }
 }
@@ -1276,6 +1447,44 @@ export const __testing__ = {
     const errors = [];
     await executeShutdownSteps(steps, errors);
     return errors;
+  },
+
+  // Add telemetry testing utilities
+  telemetry: {
+    aggregator: telemetryAggregator,
+    getMetricsSummary: () => ({
+      bufferSize: telemetryAggregator.buffer.size,
+      peakLoads: Object.fromEntries(telemetryAggregator.peakLoads),
+      currentThresholds: CONFIG.METRICS.THRESHOLDS
+    }),
+    simulateLoad: async (category, count, interval) => {
+      const results = [];
+      for (let i = 0; i < count; i++) {
+        const start = performance.now();
+        await new Promise(resolve => setTimeout(resolve, interval));
+        results.push(performance.now() - start);
+      }
+      return results;
+    }
+  },
+  
+  // Add rule testing utilities
+  rules: {
+    validateRule: (rule) => {
+      try {
+        return ruleValidator.validateRule(rule);
+      } catch (error) {
+        return { valid: false, error: error.message };
+      }
+    },
+    testRuleApplication: async (rule, tab) => {
+      const results = await ruleManager._applyRule(rule, tab);
+      return {
+        applied: Boolean(results),
+        effects: results,
+        timestamp: Date.now()
+      };
+    }
   }
 };
 

@@ -6,6 +6,12 @@
  * - Atomic updates are ensured through transaction-like handling
  * - Background.js acts as the source of truth for state validation
  * 
+ * Data Flow:
+ * 1. State changes trigger validation through background.js
+ * 2. Validated changes are batched when possible
+ * 3. Updates are tracked via telemetry
+ * 4. Changes are diffed before sync
+ * 
  * @module stateManager
  */
 
@@ -15,7 +21,9 @@ import { persistStore, persistReducer } from 'redux-persist';
 import storage from 'redux-persist/lib/storage';
 import { combineReducers } from 'redux';
 import { createSelector } from 'reselect';
-import thunk from 'redux-thunk'; // Import Redux Thunk
+import thunk from 'redux-thunk';
+import deepEqual from 'fast-deep-equal';
+import { logger } from './logger.js';
 import {
   TAB_STATES,
   MESSAGE_TYPES,
@@ -24,11 +32,15 @@ import {
   VALIDATION_TYPES,
   CONFIG,
   BATCH_CONFIG,
-  selectors
+  selectors,
+  STATE_SCHEMA,
+  SLICE_SCHEMAS,
+  VALIDATION_ERRORS
 } from './constants.js';
 import { handleInactiveTab } from './tabManager.js';
 import { validateTag, validateRule } from './tagUtils.js';
 import { checkPermissions } from './messagingUtils.js';
+import Ajv from 'ajv';
 
 // Importing types from constants.js is omitted in JS since types are not supported
 
@@ -464,16 +476,48 @@ const store = configureStore({
       serializableCheck: false,
       thunk: {
         extraArgument: {
-          batchProcessor: enhancedBatchProcessor,
+          batchProcessor: batcher,
           validateState
         }
       }
     }).concat([
+      telemetryMiddleware,
       errorLoggingMiddleware,
       enhancedPerformanceMiddleware,
       enhancedValidationMiddleware,
       createValidationMiddleware(actionValidators),
-      createPerformanceMiddleware({ threshold: 16.67 })
+      createPerformanceMiddleware({ threshold: 16.67 }),
+      (store) => (next) => (action) => {
+        if (action.type.startsWith('@@redux')) {
+          return next(action);
+        }
+
+        try {
+          const prevState = store.getState();
+          const result = next(action);
+          const newState = store.getState();
+
+          // Validate affected slices
+          const changedSlices = Object.keys(prevState).filter(
+            key => !deepEqual(prevState[key], newState[key])
+          );
+
+          for (const slice of changedSlices) {
+            if (validateSlices[slice]) {
+              validateSliceShape(slice, newState[slice]);
+            }
+          }
+
+          return result;
+        } catch (error) {
+          logger.error('State validation middleware error', {
+            actionType: action.type,
+            error: error.message,
+            type: VALIDATION_ERRORS.INVALID_ACTION
+          });
+          throw error;
+        }
+      }
     ]),
   devTools: process.env.NODE_ENV !== 'production',
 });
@@ -511,7 +555,11 @@ export const actions = {
   rules: { ...rulesSlice.actions },
   ui: { ...uiSlice.actions },
   settings: settingsSlice.actions,
-  permissions: permissionsSlice.actions
+  permissions: permissionsSlice.actions,
+  batchUpdate: (updates) => ({
+    type: 'BATCH_UPDATE',
+    payload: updates
+  })
 };
 
 // Export store and persistor
@@ -708,4 +756,141 @@ export {
   
   // State Synchronization
   validateStateUpdate
+};
+
+// Add state update tracking
+const stateUpdateMetrics = {
+  updates: 0,
+  batchedUpdates: 0,
+  lastUpdate: Date.now(),
+  updateSizes: [],
+  diffTimes: []
+};
+
+/**
+ * Enhanced state diffing with performance tracking
+ * @param {Object} current - Current state
+ * @param {Object} previous - Previous state
+ * @returns {Object} Changes between states
+ */
+const getStateDiff = (current, previous) => {
+  const start = performance.now();
+  const updates = {};
+  let updateSize = 0;
+
+  try {
+    for (const [key, value] of Object.entries(current)) {
+      if (!previous || !deepEqual(value, previous[key])) {
+        updates[key] = value;
+        updateSize += JSON.stringify(value).length;
+      }
+    }
+
+    const duration = performance.now() - start;
+    stateUpdateMetrics.diffTimes.push(duration);
+    stateUpdateMetrics.updateSizes.push(updateSize);
+
+    // Log significant diffs
+    if (duration > CONFIG.THRESHOLDS.STATE_SYNC) {
+      logger.warn('State diff exceeded threshold', {
+        duration,
+        updateSize,
+        keys: Object.keys(updates)
+      });
+    }
+
+    return updates;
+  } catch (error) {
+    logger.error('State diff failed', {
+      error: error.message,
+      type: 'STATE_DIFF_ERROR'
+    });
+    throw error;
+  }
+};
+
+/**
+ * Batch processor for state updates
+ */
+class StateUpdateBatcher {
+  constructor() {
+    this.queue = [];
+    this.processing = false;
+    this.batchTimeout = null;
+  }
+
+  add(update) {
+    this.queue.push(update);
+    this._scheduleBatch();
+  }
+
+  _scheduleBatch() {
+    if (!this.batchTimeout) {
+      this.batchTimeout = setTimeout(() => this._processBatch(), 100);
+    }
+  }
+
+  async _processBatch() {
+    if (this.processing || this.queue.length === 0) return;
+
+    this.processing = true;
+    const batch = this.queue.splice(0);
+    this.batchTimeout = null;
+
+    try {
+      const start = performance.now();
+      await store.dispatch({
+        type: 'BATCH_UPDATE',
+        payload: batch
+      });
+
+      stateUpdateMetrics.batchedUpdates++;
+      logger.logPerformance('stateBatchUpdate', performance.now() - start, {
+        updateCount: batch.length
+      });
+    } catch (error) {
+      logger.error('Batch update failed', {
+        error: error.message,
+        updates: batch.length,
+        type: 'BATCH_UPDATE_ERROR'
+      });
+    } finally {
+      this.processing = false;
+      if (this.queue.length > 0) {
+        this._scheduleBatch();
+      }
+    }
+  }
+}
+
+// Initialize batcher
+const batcher = new StateUpdateBatcher();
+
+// Enhanced middleware with telemetry
+const telemetryMiddleware = store => next => action => {
+  const start = performance.now();
+  const result = next(action);
+  const duration = performance.now() - start;
+
+  stateUpdateMetrics.updates++;
+  logger.logPerformance('stateUpdate', duration, {
+    actionType: action.type,
+    timestamp: Date.now()
+  });
+
+  return result;
+};
+
+// Testing utilities
+export const __testing__ = {
+  getStateDiff: (current, previous) => getStateDiff(current, previous),
+  getUpdateMetrics: () => ({ ...stateUpdateMetrics }),
+  validateStateUpdate: async (type, payload) => {
+    try {
+      await validateStateUpdate(type, payload);
+      return { valid: true };
+    } catch (error) {
+      return { valid: false, error: error.message };
+    }
+  }
 };

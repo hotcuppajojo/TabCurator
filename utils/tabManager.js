@@ -1,16 +1,16 @@
 /**
  * @fileoverview Tab Manager Module - Handles tab operations with background.js coordination
  * 
- * Architecture Notes:
- * - This module acts as a tab operations facade, delegating validation and state management
- * - All validation is handled by background.js (service worker)
- * - State updates are managed by stateManager.js
- * - Bookmark operations are centralized in background.js
+ * Architecture & Data Flow:
+ * 1. Tab operations trigger validation through background.js
+ * 2. State updates are managed by stateManager.js
+ * 3. Operations are batched when possible
+ * 4. Telemetry is logged via logger module
  * 
- * Primary Responsibilities:
- * - Tab lifecycle operations (create, update, remove, discard)
- * - Tab metadata handling
- * - Batch processing of tab operations
+ * Error Handling:
+ * - All errors flow through logger.error with operation context
+ * - Transient failures trigger automatic retries
+ * - Operation failures are tracked for telemetry
  * 
  * @module tabManager
  */
@@ -25,6 +25,7 @@ import {
   VALIDATION_TYPES,
   TAB_PERMISSIONS,
 } from './constants.js';
+import { logger } from './logger.js';
 
 // Add permission validation
 export async function validatePermissions(type = 'BASE') {
@@ -62,18 +63,79 @@ export const INACTIVITY_THRESHOLDS = {
   SUSPEND: 1800000, // 30 minutes
 };
 
+// Add centralized validation utilities
+const validateTabId = (tabId) => {
+  if (!tabId || typeof tabId !== 'number') {
+    const error = new Error('Invalid tab ID');
+    logger.error('Validation failed', {
+      type: 'TAB_VALIDATION',
+      value: tabId,
+      error: error.message
+    });
+    throw error;
+  }
+  return true;
+};
+
+// Add enhanced retry mechanism
+const withRetry = async (operation, options = {}) => {
+  const {
+    maxAttempts = CONFIG.RETRY.MAX_ATTEMPTS,
+    backoff = CONFIG.RETRY.BACKOFF_BASE,
+    operation: opType
+  } = options;
+
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await operation();
+      if (attempt > 1) {
+        logger.info('Operation succeeded after retry', {
+          type: opType,
+          attempts: attempt
+        });
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        const delay = backoff * Math.pow(2, attempt - 1) * (0.75 + Math.random() * 0.5);
+        logger.warn('Operation failed, retrying', {
+          type: opType,
+          attempt,
+          delay,
+          error: error.message
+        });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+};
+
 /**
  * Queries tabs based on the provided query info.
  * @param {object} queryInfo - The query information.
  * @returns {Promise<Array>} - A promise that resolves to an array of tabs.
  */
 export async function queryTabs(queryInfo) {
-  await validatePermissions();
+  const startTime = performance.now();
   try {
+    await validatePermissions();
     const tabs = await browser.tabs.query(queryInfo);
+    
+    logger.logPerformance('tabQuery', performance.now() - startTime, {
+      count: tabs.length,
+      filters: Object.keys(queryInfo)
+    });
+    
     return tabs;
   } catch (error) {
-    console.error('Error querying tabs:', error);
+    logger.error('Tab query failed', {
+      error: error.message,
+      queryInfo,
+      type: 'TAB_QUERY_ERROR'
+    });
     throw error;
   }
 }
@@ -84,26 +146,23 @@ export async function queryTabs(queryInfo) {
  * @returns {Promise<Object>} Resolves with the retrieved tab.
  */
 export async function getTab(tabId) {
-  try {
-    if (!browser.tabs || !browser.tabs.get) {
-      throw new Error('Browser API unavailable');
+  validateTabId(tabId);
+  return withRetry(async () => {
+    const startTime = performance.now();
+    try {
+      const tab = await browser.tabs.get(tabId);
+      logger.logPerformance('tabGet', performance.now() - startTime, { tabId });
+      store.dispatch(updateTabActivity(tabId, Date.now()));
+      return tab;
+    } catch (error) {
+      logger.error('Tab get failed', {
+        error: error.message,
+        tabId,
+        type: 'TAB_GET_ERROR'
+      });
+      throw error;
     }
-    if (!tabId || typeof tabId !== 'number') {
-      throw new Error('Tab ID must be a valid number');
-    }
-    const tab = await browser.tabs.get(tabId);
-    if (!tab.id || !tab.url) {
-      throw new Error('Invalid tab data');
-    }
-
-    // Update tab activity in the state
-    store.dispatch(updateTabActivity(tabId, Date.now()));
-
-    return tab;
-  } catch (err) {
-    console.error(`Error retrieving tab ${tabId}:`, err);
-    throw err;
-  }
+  }, { operation: 'GET_TAB' });
 }
 
 /**
@@ -165,12 +224,32 @@ export async function removeTab(tabId) {
  * @returns {Promise<void>}
  */
 export async function discardTab(tabId, criteria) {
-  // Send to background.js for validation and processing
-  await browser.runtime.sendMessage({
-    type: MESSAGE_TYPES.TAB_ACTION,
-    action: 'discard',
-    payload: { tabId, criteria }
-  });
+  const startTime = performance.now();
+  try {
+    await browser.runtime.sendMessage({
+      type: MESSAGE_TYPES.TAB_ACTION,
+      action: 'discard',
+      payload: { tabId, criteria }
+    });
+    
+    const duration = performance.now() - startTime;
+    logger.logPerformance('tabDiscard', duration, { tabId });
+    
+    // Telemetry feedback loop
+    if (duration > CONFIG.THRESHOLDS.TAB_DISCARD) {
+      store.dispatch(actions.rules.updateRulePriority({
+        type: 'discard',
+        adjustment: 'decrease'
+      }));
+    }
+  } catch (error) {
+    logger.error('Failed to discard tab', {
+      tabId,
+      error: error.message,
+      type: 'TAB_DISCARD'
+    });
+    throw error;
+  }
 }
 
 /**
@@ -343,24 +422,64 @@ export const validateRule = (rule) => {
 
 // Add tag-related operations
 export async function tagTab(tabId, tag) {
+  validateTabId(tabId);
+  validateTag(tag);
+  
+  const startTime = performance.now();
+  const originalTab = await getTab(tabId);
+  const updates = [];
+  
   try {
-    validateTag(tag);
-    const tab = await getTab(tabId);
-    
-    // Add the tag to the tab's title
-    const updatedTab = await updateTab(tabId, { 
-      title: `[${tag}] ${tab.title}` 
-    });
-    
-    // Update state to track the tag
-    store.dispatch(actions.tab.updateMetadata(tabId, {
-      tags: [...(tab.tags || []), tag],
+    // Prepare state update
+    const stateUpdate = {
+      tags: [...(originalTab.tags || []), tag],
       lastTagged: Date.now()
-    }));
+    };
+    
+    // Update UI
+    const updatedTab = await updateTab(tabId, { 
+      title: `[${tag}] ${originalTab.title}` 
+    });
+    updates.push(['title', updatedTab]);
+    
+    // Update state
+    await store.dispatch(actions.tab.updateMetadata(tabId, stateUpdate));
+    updates.push(['state', stateUpdate]);
+    
+    logger.logPerformance('tabTag', performance.now() - startTime, {
+      tabId,
+      tag,
+      success: true
+    });
     
     return updatedTab;
   } catch (error) {
-    console.error(`Failed to tag tab ${tabId}:`, error);
+    // Rollback changes on failure
+    logger.error('Tab tagging failed', {
+      error: error.message,
+      tabId,
+      tag,
+      type: 'TAB_TAG_ERROR'
+    });
+    
+    for (const [type, data] of updates.reverse()) {
+      try {
+        if (type === 'title') {
+          await updateTab(tabId, { title: originalTab.title });
+        } else if (type === 'state') {
+          await store.dispatch(actions.tab.updateMetadata(tabId, {
+            tags: originalTab.tags || [],
+            lastTagged: originalTab.lastTagged
+          }));
+        }
+      } catch (rollbackError) {
+        logger.error('Rollback failed', {
+          error: rollbackError.message,
+          type: 'ROLLBACK_ERROR',
+          operation: type
+        });
+      }
+    }
     throw error;
   }
 }
@@ -376,26 +495,78 @@ export async function tagTab(tabId, tag) {
  */
 export async function processTabs(tabs, processor, { 
   batchSize = CONFIG.BATCH.SIZE,
-  onProgress
+  onProgress,
+  isolateErrors = true,
+  retryFailures = true
 } = {}) {
   const results = [];
+  const errors = [];
+  const retries = new Map();
   let processed = 0;
-  
+
+  const processWithRetry = async (tab) => {
+    const startTime = performance.now();
+    const retryCount = retries.get(tab.id) || 0;
+
+    try {
+      const result = await processor(tab);
+      logger.logPerformance('tabProcessing', performance.now() - startTime, {
+        tabId: tab.id,
+        operation: 'process',
+        retries: retryCount
+      });
+      return result;
+    } catch (error) {
+      if (retryFailures && retryCount < CONFIG.RETRY.MAX_ATTEMPTS) {
+        retries.set(tab.id, retryCount + 1);
+        const delay = CONFIG.RETRY.DELAYS[retryCount];
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return processWithRetry(tab);
+      }
+      throw error;
+    }
+  };
+
   for (let i = 0; i < tabs.length; i += batchSize) {
-    const batch = tabs.slice(i, i + batchSize);
-    const batchResults = await Promise.all(
-      batch.map(tab => processor(tab))
+    const batch = tabs.slice(i, Math.min(i + batchSize, tabs.length));
+    const batchResults = await Promise.allSettled(
+      batch.map(async tab => {
+        try {
+          return await processWithRetry(tab);
+        } catch (error) {
+          logger.error('Tab processing failed', {
+            tabId: tab.id,
+            error: error.message,
+            retries: retries.get(tab.id) || 0,
+            type: 'TAB_PROCESSING_ERROR'
+          });
+          if (!isolateErrors) throw error;
+          errors.push({ tab, error });
+          return null;
+        }
+      })
     );
-    
-    results.push(...batchResults);
+
+    results.push(...batchResults
+      .filter(r => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter(Boolean));
+
     processed += batch.length;
-    
     if (onProgress) {
       onProgress(processed / tabs.length);
     }
+
+    logger.info('Batch processed', {
+      batchSize: batch.length,
+      successCount: batchResults.filter(r => r.status === 'fulfilled').length,
+      errorCount: batchResults.filter(r => r.status === 'rejected').length,
+      totalProcessed: processed,
+      totalTabs: tabs.length
+    });
   }
-  
-  return results;
+
+  return { results, errors };
 }
 
 // Add rule management functionality
@@ -506,6 +677,40 @@ export async function processBatchOperations(operations) {
     payload: { operations }
   });
 }
+
+// Add testing utilities
+export const __testing__ = {
+  validateTabId: (tabId) => {
+    try {
+      validateTabId(tabId);
+      return { valid: true };
+    } catch (error) {
+      return { valid: false, error: error.message };
+    }
+  },
+  
+  processBatch: async (tabs, processor, options) => {
+    return processTabs(tabs, processor, options);
+  },
+  
+  validateTag: (tag) => {
+    try {
+      validateTag(tag);
+      return { valid: true };
+    } catch (error) {
+      return { valid: false, error: error.message };
+    }
+  },
+  
+  // Add lifecycle test helpers
+  testTabLifecycle: async (createProps) => {
+    const tab = await createTab(createProps);
+    await updateTab(tab.id, { title: 'Test Update' });
+    await discardTab(tab.id);
+    await removeTab(tab.id);
+    return true;
+  }
+};
 
 // Public interface - explicit exports with documentation
 export {

@@ -8,9 +8,9 @@ import {
   updateTab, 
   discardTab 
 } from './tabManager.js';
-import { validateTag } from './tagUtils.js';
 import Ajv from 'ajv';
 import deepEqual from 'fast-deep-equal';
+import { logger } from './logger.js';
 
 /**
  * @fileoverview Enhanced Connection Manager with performance monitoring,
@@ -86,6 +86,21 @@ class ConnectionManager {
     
     // Initialize dynamic storage quota
     this._initializeStorageQuota();
+
+    // Add connection metrics tracking
+    this.connectionMetrics = {
+      successful: 0,
+      failed: 0,
+      activeConnections: new Map(),
+      latencyHistory: new Map(),
+      lastCleanup: Date.now()
+    };
+
+    // Track validation failures
+    this.validationMetrics = {
+      failures: new Map(),
+      lastReset: Date.now()
+    };
   }
 
   /**
@@ -308,36 +323,64 @@ class ConnectionManager {
 
   async connect() {
     const connectionId = crypto.randomUUID();
-    const port = browser.runtime.connect({ name: 'tabActivity' });
-
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this._logError(new Error('Connection timeout'), {
-          type: 'CONNECTION',
-          connectionId
-        });
-        reject(new Error('Connection timeout'));
-      }, CONFIG.TIMEOUTS.CONNECTION);
-
-      port.onMessage.addListener((msg) => {
-        if (msg.type === MESSAGE_TYPES.CONNECTION_ACK) {
-          clearTimeout(timeoutId);
-          const connection = { port, timestamp: Date.now() };
-          this.connections.set(connectionId, connection);
-          this.metrics.connections.set(connectionId, {
-            established: Date.now(),
-            messageCount: 0
+    const startTime = performance.now();
+    
+    try {
+      const port = browser.runtime.connect({ name: 'tabActivity' });
+      
+      const connection = await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          this.connectionMetrics.failed++;
+          logger.error('Connection timeout', {
+            connectionId,
+            duration: performance.now() - startTime,
+            type: 'CONNECTION_TIMEOUT'
           });
-          resolve(connectionId);
-        }
+          reject(new Error('Connection timeout'));
+        }, CONFIG.TIMEOUTS.CONNECTION);
+
+        port.onMessage.addListener((msg) => {
+          if (msg.type === MESSAGE_TYPES.CONNECTION_ACK) {
+            clearTimeout(timeoutId);
+            const duration = performance.now() - startTime;
+            
+            // Track successful connection
+            this.connectionMetrics.successful++;
+            this.connectionMetrics.activeConnections.set(connectionId, {
+              established: Date.now(),
+              port,
+              messageCount: 0,
+              lastActivity: Date.now()
+            });
+
+            // Log connection performance
+            logger.logPerformance('connectionEstablish', duration, {
+              connectionId,
+              successful: true
+            });
+
+            resolve({ port, duration });
+          }
+        });
+
+        port.onDisconnect.addListener(() => {
+          clearTimeout(timeoutId);
+          this._handleDisconnect(connectionId, startTime);
+          reject(new Error('Connection lost'));
+        });
       });
 
-      port.onDisconnect.addListener(() => {
-        clearTimeout(timeoutId);
-        this._handleDisconnect(connectionId);
-        reject(new Error('Connection lost'));
+      return connectionId;
+    } catch (error) {
+      this.connectionMetrics.failed++;
+      logger.error('Connection failed', {
+        connectionId,
+        error: error.message,
+        duration: performance.now() - startTime,
+        type: 'CONNECTION_ERROR'
       });
-    });
+      throw error;
+    }
   }
 
   /**
@@ -367,24 +410,79 @@ class ConnectionManager {
    * Validates message structure and content
    * @private
    */
-  _validateMessage(message) {
-    if (!validateMessage(message)) {
-      throw new Error(`Invalid message format: ${JSON.stringify(validateMessage.errors)}`);
+  async validateMessage(message) {
+    const startTime = performance.now();
+    try {
+      if (!validateMessage(message)) {
+        const errors = validateMessage.errors;
+        const errorContext = {
+          type: 'MESSAGE_VALIDATION',
+          messageType: message?.type,
+          errors,
+          severity: ERROR_CATEGORIES.SEVERITY.HIGH
+        };
+        
+        // Log validation failure
+        logger.error('Message validation failed', errorContext);
+        
+        // Track validation failures
+        const failureType = errors[0]?.keyword || 'unknown';
+        const currentCount = this.validationMetrics.failures.get(failureType) || 0;
+        this.validationMetrics.failures.set(failureType, currentCount + 1);
+        
+        throw new Error(`Message validation failed: ${JSON.stringify(errors)}`);
+      }
+      return true;
+    } finally {
+      const duration = performance.now() - startTime;
+      logger.logPerformance('messageValidation', duration, {
+        messageType: message?.type,
+        validationTime: duration
+      });
     }
-    return true;
   }
 
   async sendMessage(connectionId, message) {
     this._checkRateLimit('API_CALLS');
-    this._validateMessage(message);
+    await this.validateMessage(message);
     return this._retryWithBackoff(() => this._sendMessage(connectionId, message));
   }
 
-  disconnect(connectionId) {
-    const connection = this.connections.get(connectionId);
+  async disconnect(connectionId) {
+    const startTime = performance.now();
+    const connection = this.connectionMetrics.activeConnections.get(connectionId);
+    
     if (connection) {
-      connection.port.disconnect();
-      this.connections.delete(connectionId);
+      try {
+        connection.port.disconnect();
+        this.connectionMetrics.activeConnections.delete(connectionId);
+        
+        const duration = performance.now() - startTime;
+        logger.logPerformance('connectionTerminate', duration, {
+          connectionId,
+          lifetime: Date.now() - connection.established
+        });
+      } catch (error) {
+        logger.error('Disconnect error', {
+          connectionId,
+          error: error.message,
+          type: 'DISCONNECT_ERROR'
+        });
+        throw error;
+      }
+    }
+  }
+
+  _handleDisconnect(connectionId, startTime) {
+    const connection = this.connectionMetrics.activeConnections.get(connectionId);
+    if (connection) {
+      const duration = Date.now() - connection.established;
+      logger.info('Connection disconnected', {
+        connectionId,
+        duration,
+        messageCount: connection.messageCount
+      });
+      this.connectionMetrics.activeConnections.delete(connectionId);
     }
   }
 
@@ -448,7 +546,7 @@ class ConnectionManager {
    * Enhanced message handler with performance monitoring
    */
   async handleMessage(message, sender) {
-    this._validateMessage(message);
+    await this.validateMessage(message);
     
     const handler = this._messageHandlers[message.type];
     if (!handler) {
@@ -497,7 +595,7 @@ class ConnectionManager {
    * Broadcasts message to all active connections
    */
   async broadcastMessage(message) {
-    this._validateMessage(message);
+    await this.validateMessage(message);
     const errors = [];
 
     for (const [id, connection] of this.connections) {
@@ -538,19 +636,29 @@ class ConnectionManager {
    */
   async _cleanupConnections() {
     const now = Date.now();
-    if (now - this.lastCleanup < this.cleanupInterval) return;
+    if (now - this.connectionMetrics.lastCleanup < CONFIG.TIMEOUTS.CLEANUP) {
+      return;
+    }
 
     const staleConnections = [];
-    for (const [id, connection] of this.connections) {
-      if (now - connection.timestamp > this.cleanupInterval) {
+    for (const [id, connection] of this.connectionMetrics.activeConnections) {
+      if (now - connection.lastActivity > CONFIG.TIMEOUTS.CONNECTION) {
         staleConnections.push(id);
       }
     }
 
-    staleConnections.forEach(id => this.disconnect(id));
-    this.lastCleanup = now;
+    if (staleConnections.length > 0) {
+      logger.warn('Cleaning up stale connections', {
+        count: staleConnections.length,
+        totalActive: this.connectionMetrics.activeConnections.size
+      });
 
-    console.log(`Cleaned up ${staleConnections.length} stale connections`);
+      await Promise.all(
+        staleConnections.map(id => this.disconnect(id))
+      );
+    }
+
+    this.connectionMetrics.lastCleanup = now;
   }
 
   /**
@@ -1090,6 +1198,56 @@ class ConnectionManager {
       timeoutPromise
     ]);
   }
+
+  // Add connection metrics reporting
+  getConnectionMetrics() {
+    const now = Date.now();
+    const activeConnections = this.connectionMetrics.activeConnections.size;
+    const totalConnections = this.connectionMetrics.successful + this.connectionMetrics.failed;
+    
+    return {
+      successful: this.connectionMetrics.successful,
+      failed: this.connectionMetrics.failed,
+      activeConnections,
+      successRate: totalConnections ? 
+        (this.connectionMetrics.successful / totalConnections) * 100 : 0,
+      validationFailures: Object.fromEntries(this.validationMetrics.failures),
+      timestamp: now
+    };
+  }
+
+  // Add test utilities
+  __testing__ = {
+    validateMessage: async (message) => {
+      try {
+        await this.validateMessage(message);
+        return true;
+      } catch (error) {
+        return { valid: false, error: error.message };
+      }
+    },
+
+    getMetrics: () => ({
+      connections: this.getConnectionMetrics(),
+      validation: {
+        failures: Object.fromEntries(this.validationMetrics.failures),
+        lastReset: this.validationMetrics.lastReset
+      }
+    }),
+
+    simulateLoad: async (connectionCount, messageRate) => {
+      const results = [];
+      for (let i = 0; i < connectionCount; i++) {
+        try {
+          const connectionId = await this.connect();
+          results.push({ connectionId, success: true });
+        } catch (error) {
+          results.push({ error: error.message, success: false });
+        }
+      }
+      return results;
+    }
+  };
 }
 
 // developer documentation

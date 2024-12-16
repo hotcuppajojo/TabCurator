@@ -253,6 +253,36 @@ export const CONFIG = Object.freeze({
   INACTIVITY: {
     PROMPT: 600000, // 10 minutes
     SUSPEND: 1800000 // 30 minutes
+  },
+
+  getTimeout: (key, fallback) => {
+    const value = CONFIG.TIMEOUTS[key];
+    if (typeof value === 'number' && 
+        value >= CONFIG_RANGES.TIMEOUTS.min && 
+        value <= CONFIG_RANGES.TIMEOUTS.max) {
+      return value;
+    }
+    return fallback || CONFIG_DEFAULTS.TIMEOUTS[key] || CONFIG_DEFAULTS.TIMEOUTS.MIN;
+  },
+
+  getThreshold: (key, fallback) => {
+    const value = CONFIG.THRESHOLDS[key];
+    if (typeof value === 'number' && 
+        value >= CONFIG_RANGES.THRESHOLDS.min && 
+        value <= CONFIG_RANGES.THRESHOLDS.max) {
+      return value;
+    }
+    return fallback || CONFIG_DEFAULTS.THRESHOLDS[key] || CONFIG_DEFAULTS.THRESHOLDS.MIN;
+  },
+
+  getBatchSize: (key, fallback) => {
+    const value = CONFIG.BATCH[key];
+    if (typeof value === 'number' && 
+        value >= CONFIG_RANGES.BATCH.size.min && 
+        value <= CONFIG_RANGES.BATCH.size.max) {
+      return value;
+    }
+    return fallback || CONFIG_DEFAULTS.BATCH[key] || CONFIG_DEFAULTS.BATCH.MIN_SIZE;
   }
 });
 
@@ -340,7 +370,7 @@ export const selectors = {
       new RegExp(rule.condition.urlFilter.replace(/\*/g, '.*')).test(url)
     )
   )
-};
+}
 
 // Define the types before exporting
 export const Tab = /** @typedef {Object} Tab
@@ -398,3 +428,267 @@ export {
   // Selectors
   selectors
 };
+
+/**
+ * @typedef {Object} ConfigDefaults
+ * Default fallback values for dynamic configuration
+ */
+export const CONFIG_DEFAULTS = Object.freeze({
+  TIMEOUTS: {
+    SHUTDOWN: 5000,
+    SYNC: 10000,
+    CLEANUP: 300000,
+    RULE_VALIDATION: 60000,
+    CONNECTION: 5000,
+    MESSAGE: 3000,
+    BATCH: 30000,
+    EMERGENCY: 5000,
+    MIN: 1000, // Minimum allowed timeout
+    MAX: 600000 // Maximum allowed timeout (10 minutes)
+  },
+  THRESHOLDS: {
+    MESSAGE_PROCESSING: 50,
+    STATE_SYNC: 100,
+    BATCH_PROCESSING: 200,
+    PERFORMANCE_WARNING: 16.67,
+    STORAGE_WARNING: 0.8,
+    SYNC_QUEUE: 100,
+    MIN: 10, // Minimum allowed threshold
+    MAX: 1000 // Maximum allowed threshold
+  },
+  BATCH: {
+    MAX_SIZE: 100,
+    DEFAULT_SIZE: 10,
+    TIMEOUT: 5000,
+    FLUSH_SIZE: 50,
+    MIN_SIZE: 5,
+    MAX_TIMEOUT: 30000
+  }
+});
+
+/**
+ * Configuration validation ranges
+ */
+export const CONFIG_RANGES = Object.freeze({
+  TIMEOUTS: {
+    min: CONFIG_DEFAULTS.TIMEOUTS.MIN,
+    max: CONFIG_DEFAULTS.TIMEOUTS.MAX
+  },
+  THRESHOLDS: {
+    min: CONFIG_DEFAULTS.THRESHOLDS.MIN,
+    max: CONFIG_DEFAULTS.THRESHOLDS.MAX
+  },
+  BATCH: {
+    size: {
+      min: CONFIG_DEFAULTS.BATCH.MIN_SIZE,
+      max: CONFIG_DEFAULTS.BATCH.MAX_SIZE
+    },
+    timeout: {
+      min: CONFIG_DEFAULTS.TIMEOUTS.MIN,
+      max: CONFIG_DEFAULTS.BATCH.MAX_TIMEOUT
+    }
+  }
+});
+
+// Add validation schemas
+export const CONFIG_SCHEMAS = Object.freeze({
+  timeout: {
+    type: 'number',
+    minimum: CONFIG_RANGES.TIMEOUTS.min,
+    maximum: CONFIG_RANGES.TIMEOUTS.max
+  },
+  threshold: {
+    type: 'number',
+    minimum: CONFIG_RANGES.THRESHOLDS.min,
+    maximum: CONFIG_RANGES.THRESHOLDS.max
+  },
+  batchSize: {
+    type: 'number',
+    minimum: CONFIG_RANGES.BATCH.size.min,
+    maximum: CONFIG_RANGES.BATCH.size.max
+  }
+});
+
+// Add configuration type definitions
+export const CONFIG_TYPES = Object.freeze({
+  TIMEOUT: 'timeout',
+  THRESHOLD: 'threshold',
+  BATCH_SIZE: 'batchSize'
+});
+
+// Add validation helper
+export const validateConfigValue = (type, value) => {
+  const schema = CONFIG_SCHEMAS[type];
+  if (!schema) {
+    return CONFIG_DEFAULTS[type] || null;
+  }
+
+  if (typeof value !== schema.type || 
+      value < schema.minimum || 
+      value > schema.maximum) {
+    return CONFIG_DEFAULTS[type] || schema.minimum;
+  }
+
+  return value;
+};
+
+// Add comprehensive state validation schema after type definitions
+export const STATE_SCHEMA = Object.freeze({
+  type: 'object',
+  required: ['tabs', 'sessions', 'rules', 'archivedTabs', 'tabActivity', 'savedSessions'],
+  properties: {
+    tabs: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'url'],
+        properties: {
+          id: { type: 'number' },
+          url: { type: 'string' },
+          title: { type: 'string' },
+          active: { type: 'boolean' },
+          status: { 
+            type: 'string',
+            enum: Object.values(TAB_STATES)
+          },
+          lastAccessed: { type: 'number' }
+        }
+      }
+    },
+    sessions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['name', 'tabs'],
+        properties: {
+          name: { type: 'string' },
+          tabs: {
+            type: 'array',
+            items: { $ref: '#/properties/tabs/items' }
+          },
+          createdAt: { type: 'number' },
+          lastAccessed: { type: 'number' }
+        }
+      }
+    },
+    rules: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'condition', 'action'],
+        properties: {
+          id: { type: 'string' },
+          condition: { type: 'string' },
+          action: { type: 'string' },
+          domains: {
+            type: 'array',
+            items: { type: 'string' }
+          },
+          priority: { type: 'number' }
+        }
+      }
+    },
+    archivedTabs: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        required: ['id', 'url', 'archivedAt'],
+        properties: {
+          id: { type: 'number' },
+          url: { type: 'string' },
+          title: { type: 'string' },
+          archivedAt: { type: 'number' },
+          tags: {
+            type: 'array',
+            items: { type: 'string' }
+          }
+        }
+      }
+    },
+    tabActivity: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        required: ['lastAccessed'],
+        properties: {
+          lastAccessed: { type: 'number' },
+          suspensionStatus: {
+            type: 'string',
+            enum: Object.values(TAB_STATES)
+          },
+          tags: {
+            type: 'array',
+            items: { type: 'string' }
+          }
+        }
+      }
+    },
+    savedSessions: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        required: ['name', 'tabs'],
+        properties: {
+          name: { type: 'string' },
+          tabs: {
+            type: 'array',
+            items: { $ref: '#/properties/tabs/items' }
+          },
+          savedAt: { type: 'number' }
+        }
+      }
+    },
+    settings: {
+      type: 'object',
+      properties: {
+        inactivityThreshold: { type: 'number' },
+        autoSuspend: { type: 'boolean' },
+        tagPromptEnabled: { type: 'boolean' }
+      }
+    },
+    permissions: {
+      type: 'object',
+      properties: {
+        granted: {
+          type: 'array',
+          items: { type: 'string' }
+        },
+        pending: {
+          type: 'array',
+          items: { type: 'string' }
+        }
+      }
+    }
+  }
+});
+
+// Add slice-specific schemas
+export const SLICE_SCHEMAS = Object.freeze({
+  tabManagement: {
+    type: 'object',
+    required: ['tabs', 'activity', 'metadata'],
+    properties: {
+      tabs: { $ref: '#/properties/tabs' },
+      activity: { $ref: '#/properties/tabActivity' },
+      metadata: {
+        type: 'object',
+        additionalProperties: {
+          type: 'object',
+          properties: {
+            tags: {
+              type: 'array',
+              items: { type: 'string' }
+            },
+            lastUpdated: { type: 'number' }
+          }
+        }
+      }
+    }
+  },
+  sessions: {
+    $ref: '#/properties/sessions'
+  },
+  rules: {
+    $ref: '#/properties/rules'
+  }
+});
