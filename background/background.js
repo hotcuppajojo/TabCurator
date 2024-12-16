@@ -1,842 +1,859 @@
 // background/background.js
-
 /**
- * @fileoverview Background service worker module for TabCurator extension.
- * Manages tab lifecycle, rule processing, session handling, and automated maintenance tasks.
- * Ensures compatibility with both Chrome and Firefox using the WebExtension API.
+ * @fileoverview Background Service Worker
+ * Coordinates between UI, tab management, and state synchronization
  */
-import { CONNECTION_NAME } from './constants.js';
-import { 
-  getTab, 
-  createTab, 
-  updateTab, 
-  removeTab, 
-  discardTab,
-  suspendTab,
-  suspendInactiveTabs,
-  queryTabs,
-  archiveTab
-} from '../utils/tabManager.js';
 
-import { store } from '../utils/stateManager.js';
-import { 
-  actions,
-  initializeStateFromStorage 
-} from '../utils/stateManager.js';
-
-import { 
-  handleMessage, 
-  initializeConnection, 
-  sendMessage,
-  createAlarm,
-  onAlarm,
-  connectToBackground,
-  ServiceWorker
-} from '../utils/messagingUtils.js';
-
-// Import the browser API correctly for the service worker context
 import browser from 'webextension-polyfill';
-import { ServiceWorkerManager } from '../utils/messagingUtils.js';
-import { validatePermissions } from '../utils/permissionUtils.js';
-import { initializeServiceWorkerState } from '../utils/stateManager.js';
+import deepEqual from 'fast-deep-equal';
+import {
+  store,
+  actions,
+  validateStateUpdate
+} from '../utils/stateManager.js';
+import {
+  getTab,
+  updateTab,
+  discardTab,
+  validateTab,
+  addTagToTab,
+  removeTagFromTab,
+  getTagsForTab,
+  processBatchOperations,
+  TabLifecycle
+} from '../utils/tabManager.js';
+import {
+  connection,
+  validateMessage,
+  checkPermissions,
+  requestPermissions,
+  removePermissions
+} from '../utils/connectionManager.js';
+import {
+  MESSAGE_TYPES,
+  ERROR_TYPES,
+  TAB_STATES,
+  CONFIG,
+  VALIDATION_TYPES,
+  PERMISSION_TYPES,
+  TAG_VALIDATION,
+  TELEMETRY_CONFIG,
+  ERROR_CATEGORIES,
+  STORAGE_CONFIG
+} from '../utils/constants.js';
 
-// Add lifecycle events
-export const LIFECYCLE_EVENTS = Object.freeze({
-  INSTALL: 'install',
-  ACTIVATE: 'activate',
-  UPDATE: 'update'
-});
+// Initialize connection manager
+let isInitialized = false;
+let metricsInterval;
+let shutdownTimer;
 
-// Add lifecycle management
-export const ServiceWorkerLifecycle = Object.freeze({
-  async onInstall() {
-    await initializeStateFromStorage();
-    await setupRules();
-  },
-  async onActivate() {
-    await browser.clients.claim();
-    await recoverState();
-  },
-  async onUpdate() {
-    await persistState();
-    await updateRules();
-  }
-});
-
-// Add declarative rules management
-export const DeclarativeRules = Object.freeze({
-  async setup() {
-    if (await validatePermissions('OPTIONAL')) {
-      const rules = await loadRules();
-      await browser.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: rules.map(r => r.id),
-        addRules: rules
-      });
+// Add rule validation utilities
+const ruleValidator = {
+  validateRule: (rule) => {
+    if (!rule?.condition || !rule?.action) {
+      throw new Error('Invalid rule format');
     }
-  }
-});
-
-const sw = await ServiceWorkerManager.initialize();
-
-console.log('Background service worker initialized.');
-
-// Declare a set to keep track of all connected ports
-const connectedPorts = new Set();
-
-// Add response queue for managing multiple requests
-const responseQueue = new Map();
-
-async function handleBackgroundMessage(message, sender) {
-  const { type, payload, requestId } = message;
+    return true;
+  },
   
-  try {
-    let response;
-    
-    switch (type) {
-      case 'STATE_REQUEST':
-        response = await store.getState();
-        break;
-        
-      case 'TAB_ACTION':
-        response = await handleTabAction(payload);
-        break;
-        
-      // ...handle other message types
-    }
-    
-    return {
-      type: `${type}_RESPONSE`,
-      requestId,
-      payload: response
-    };
-    
-  } catch (error) {
-    return {
-      type: 'ERROR',
-      requestId,
-      error: error.message
-    };
+  validateRuleSet: (rules) => {
+    return rules.every(rule => {
+      try {
+        return ruleValidator.validateRule(rule);
+      } catch (error) {
+        console.error(`Invalid rule:`, error);
+        return false;
+      }
+    });
   }
-}
+};
 
-// Define the background object in the global scope
-const background = {
-  /**
+// Add dynamic telemetry configuration
+const telemetryConfig = {
+  thresholds: { ...TELEMETRY_CONFIG.THRESHOLDS },
+  
+  updateThresholds: async (newThresholds) => {
+    Object.assign(telemetryConfig.thresholds, newThresholds);
+    await browser.storage.local.set({ 
+      telemetryThresholds: telemetryConfig.thresholds 
+    });
+  }
+};
 
+// Add telemetry aggregation
+const telemetryAggregator = {
+  buffer: new Map(),
+  flushThreshold: 50,
+  aggregationWindow: 60000, // 1 minute
 
-  /**
-   * Sets up alarms based on stored settings.
-   */
-  async setupAlarms(browserInstance) {
-    try {
-      if (!browserInstance || !browserInstance.storage) {
-        console.error('Storage API not available');
-        return;
-      }
-      const settings = await browser.storage.sync.get({ inactiveCheckPeriod: 5 }); // Pass an object with default values
-      const period = settings.inactiveCheckPeriod || 5; // Ensure a default value
-      
-      createAlarm('checkForInactiveTabs', { periodInMinutes: period }, browserInstance);
-      console.log("Alarm 'checkForInactiveTabs' created successfully.");
-      
-      onAlarm(async (alarm) => {
-        if (alarm.name === 'checkForInactiveTabs') {
-          console.log("Alarm 'checkForInactiveTabs' triggered.");
-          await this.checkForInactiveTabs(browserInstance);
-        }
-      }, browserInstance);
-      
-      // Listen for settings changes to update alarms
-      browserInstance.storage.onChanged.addListener((changes) => {
-        if (changes.inactiveCheckPeriod) {
-          createAlarm('checkForInactiveTabs', { 
-            periodInMinutes: changes.inactiveCheckPeriod.newValue 
-          }, browserInstance);
-          console.log("Alarm 'checkForInactiveTabs' updated based on settings change.");
-        }
-      });
-      
-      // Initial check
-      await this.checkForInactiveTabs(browserInstance);
-      console.log("Initial inactive tabs check completed.");
-    } catch (error) {
-      console.error("Error setting up alarms:", error);
+  addEvent(category, event, data = {}) {
+    const key = `${category}_${event}`;
+    const existing = this.buffer.get(key) || {
+      count: 0,
+      sum: 0,
+      min: Infinity,
+      max: -Infinity,
+      samples: []
+    };
+
+    // Update aggregates
+    existing.count++;
+    if (data.duration) {
+      existing.sum += data.duration;
+      existing.min = Math.min(existing.min, data.duration);
+      existing.max = Math.max(existing.max, data.duration);
+    }
+
+    // Keep limited samples
+    if (existing.samples.length < 5) {
+      existing.samples.push(data);
+    }
+
+    this.buffer.set(key, existing);
+
+    // Flush if threshold reached
+    if (existing.count >= this.flushThreshold) {
+      this.flush(key);
     }
   },
 
-  /**
-   * Initializes the background service worker.
-   * Sets up event handlers, message listeners, and persistent storage defaults.
-   *
-   * Enhanced to ensure stability and handle unexpected disconnections gracefully.
-   */
-  async initBackground(browserInstance = browser) { // Updated default parameter
-    try {
-      // Verify required APIs first
-      if (!browserInstance?.tabs || !browserInstance?.alarms || !browserInstance?.runtime) {
-        throw new Error("Required browser APIs are unavailable.");
-      }
-
-      // Initialize state first
-      await initializeStateFromStorage();
-
-      // Add diagnostic logging for service worker activation
-      console.log('Initializing background service worker...');
-
-      // Set up state sync message handler
-      self.addEventListener('message', async (event) => {
-        if (event.data?.type === MESSAGE_TYPES.STATE_SYNC) {
-          store.dispatch({
-            type: ACTION_TYPES.STATE.SYNC,
-            payload: event.data.payload
-          });
-          
-          // Notify all clients of state update
-          const clients = await self.clients.matchAll();
-          clients.forEach(client => {
-            client.postMessage({
-              type: MESSAGE_TYPES.STATE_UPDATE,
-              payload: store.getState()
-            });
-          });
-        }
-      });
-
-      // Set up runtime.onMessage listener
-      if (browserInstance.runtime.onMessage && browserInstance.runtime.onMessage.addListener) {
-        browserInstance.runtime.onMessage.addListener((message, sender, sendResponse) => {
-          handleBackgroundMessage(message, sender, sendResponse, browserInstance, store)
-            .catch(error => {
-              console.error('Error handling message:', error);
-              sendResponse({ error: error.message });
-            });
-          return true; // Keeps the message channel open for async response
+  async flush(key = null) {
+    const toFlush = key ? [key] : Array.from(this.buffer.keys());
+    
+    for (const k of toFlush) {
+      const data = this.buffer.get(k);
+      if (data) {
+        await telemetryTracker.logEvent(k.split('_')[0], 'aggregate', {
+          ...data,
+          average: data.sum / data.count,
+          timestamp: Date.now()
         });
-        console.log("runtime.onMessage listener set up successfully.");
-      } else {
-        console.warn("runtime.onMessage.addListener is not available.");
+        this.buffer.delete(k);
       }
-
-      // Set up runtime.onConnect listener for general connections
-      if (browserInstance.runtime.onConnect && browserInstance.runtime.onConnect.addListener) {
-        browserInstance.runtime.onConnect.addListener((connectedPort) => {
-          console.log('New connection attempt from:', connectedPort.name);
-
-          if (connectedPort.name === CONNECTION_NAME || connectedPort.name === 'tabActivity') {
-            // Add the connected port to the set
-            connectedPorts.add(connectedPort);
-
-            console.log('Port connected:', connectedPort.name);
-
-            // Define message listener
-            const messageListener = async (message) => {
-              // Ensure the port is still connected
-              if (!connectedPorts.has(connectedPort)) return;
-
-              try {
-                if (message.type === 'CONNECT_REQUEST') {
-                  connectedPort.postMessage({ 
-                    type: 'CONNECTION_ACK',
-                    timestamp: Date.now()
-                  });
-                  return;
-                }
-
-                switch (message.action) {
-                  case "saveSession":
-                  case "SAVE_SESSION":
-                    await saveSessionHandler(message.sessionName, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "archiveTab":
-                  case "ARCHIVE_TAB":
-                    await archiveTab(message.tabId, message.tags, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "restoreSession":
-                  case "RESTORE_SESSION":
-                    await restoreSessionHandler(message.sessionName, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "suspendInactiveTabs":
-                    await suspendInactiveTabs(browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "getSessions":
-                    const sessions = await getSavedSessions(browserInstance);
-                    connectedPort.postMessage({ sessions });
-                    break;
-
-                  case "updateRules":
-                  case "UPDATE_RULES":
-                    await updateRulesHandler(message.rules, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "deleteSession":
-                    await deleteSessionHandler(message.sessionName, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "getState":
-                    connectedPort.postMessage({ state: store.getState() });
-                    break;
-
-                  case "DISPATCH_ACTION":
-                    store.dispatch(message.payload);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "getTab":
-                    const tab = await getTab(message.tabId);
-                    connectedPort.postMessage({ success: true, tab });
-                    break;
-
-                  case "suspendTab":
-                    const suspendedTab = await suspendTab(message.tabId);
-                    connectedPort.postMessage({ success: true, tab: suspendedTab });
-                    break;
-
-                  case "createTab":
-                    const newTab = await createTab(message.properties);
-                    connectedPort.postMessage({ success: true, tab: newTab });
-                    break;
-
-                  case "updateTab":
-                    const updatedTab = await updateTab(message.tabId, message.properties);
-                    connectedPort.postMessage({ success: true, tab: updatedTab });
-                    break;
-
-                  case "removeTab":
-                    await removeTab(message.tabId);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  default:
-                    console.warn("Unknown action:", message.action);
-                    connectedPort.postMessage({ error: "Unknown action" });
-                }
-              } catch (error) {
-                console.error('Error handling port message:', error);
-                connectedPort.postMessage({ type: 'ERROR', error: error.message });
-              }
-            };
-
-            // Define disconnect listener
-            const disconnectListener = () => {
-              console.log('Port disconnected:', connectedPort.name);
-              connectedPorts.delete(connectedPort);
-              connectedPort.onMessage.removeListener(messageListener);
-              connectedPort.onDisconnect.removeListener(disconnectListener);
-            };
-
-            // Attach listeners
-            connectedPort.onMessage.addListener(messageListener);
-            connectedPort.onDisconnect.addListener(disconnectListener);
-
-            // Store listener references on the connectedPort
-            connectedPort._messageListener = messageListener;
-            connectedPort._disconnectListener = disconnectListener;
-
-            // Send immediate acknowledgment
-            connectedPort.postMessage({ type: 'CONNECTION_ACK', timestamp: Date.now() });
-
-            console.log('Connection listeners set up successfully.');
-          }
-        });
-        console.log("runtime.onConnect listener set up successfully.");
-      } else {
-        console.warn("runtime.onConnect.addListener is not available.");
-      }
-
-      // Initialize connection utilities
-      initializeConnection(sendMessage);
-
-      // Ensure Redux store is initialized with default state
-      store.dispatch({ type: 'RESET_STATE' });
-
-      console.log("Background service worker started.");
-
-      // Setup tabs.onUpdated listener
-      if (browserInstance.tabs.onUpdated && browserInstance.tabs.onUpdated.addListener) {
-        browserInstance.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-          if (changeInfo.status === 'complete') {
-            applyRulesToTab(tab, browserInstance, store);
-          }
-        });
-        console.log("tabs.onUpdated listener set up successfully.");
-      } else {
-        console.warn("tabs.onUpdated.addListener is not available.");
-      }
-
-      // Setup tabs.onCreated listener
-      if (browserInstance.tabs.onCreated && browserInstance.tabs.onCreated.addListener) {
-        browserInstance.tabs.onCreated.addListener((tab) => {
-          store.dispatch({ type: "UPDATE_TAB_ACTIVITY", tabId: tab.id, timestamp: Date.now() });
-        });
-        console.log("tabs.onCreated listener set up successfully.");
-      } else {
-        console.warn("tabs.onCreated.addListener is not available.");
-      }
-
-      // Prevent overwriting storage during tests
-      if (process.env.NODE_ENV !== 'test') {
-        // Set default storage values on extension installation
-        if (browserInstance.runtime.onInstalled && browserInstance.runtime.onInstalled.addListener) {
-          browserInstance.runtime.onInstalled.addListener(async () => {
-            try {
-              await new Promise((resolve, reject) => {
-                browser.storage.sync.set({
-                  inactiveThreshold: 60,
-                  tabLimit: 100,
-                  rules: [],
-                }, () => {
-                  if (browser.runtime.lastError) {
-                    reject(browser.runtime.lastError);
-                  } else {
-                    resolve();
-                  }
-                });
-              });
-              console.log("Default settings initialized.");
-            } catch (error) {
-              console.error("Error initializing default settings:", error);
-            }
-
-            // Register declarativeNetRequest rules with unique IDs
-            try {
-              await addBlockRule('https://example.com/*');
-              console.log("Declarative Net Request rules registered.");
-            } catch (error) {
-              console.error("Error registering declarativeNetRequest rules:", error);
-            }
-          });
-          console.log("runtime.onInstalled listener set up successfully.");
-        } else {
-          console.warn("runtime.onInstalled.addListener is not available.");
-        }
-      }
-
-      // Setup tabs.onActivated listener
-      if (browserInstance.tabs.onActivated && browserInstance.tabs.onActivated.addListener) {
-        browserInstance.tabs.onActivated.addListener(({ tabId }) => {
-          store.dispatch({ type: "UPDATE_TAB_ACTIVITY", tabId, timestamp: Date.now() });
-          console.log(`Tab activated: ${tabId}`);
-        });
-        console.log("tabs.onActivated listener set up successfully.");
-      } else {
-        console.warn("tabs.onActivated.addListener is not available.");
-      }
-
-      // Setup alarm handling
-      await this.setupAlarms(browserInstance);
-
-      // Setup additional runtime.onConnect listener for 'tabActivity'
-      if (browserInstance.runtime.onConnect && browserInstance.runtime.onConnect.addListener) {
-        browserInstance.runtime.onConnect.addListener((connectedPort) => {
-          if (connectedPort.name === 'tabActivity') {
-            console.log('Port connected:', connectedPort.name);
-            
-            // Track connected ports
-            connectedPorts.add(connectedPort);
-            
-            // Define message listener for this port
-            const messageListener = async (message) => {
-              if (!connectedPorts.has(connectedPort)) return;
-              
-              try {
-                if (message.type === 'CONNECT_REQUEST') {
-                  connectedPort.postMessage({ 
-                    type: 'CONNECTION_ACK',
-                    timestamp: Date.now()
-                  });
-                  return;
-                }
-
-                switch (message.action) {
-                  case "saveSession":
-                  case "SAVE_SESSION":
-                    await saveSessionHandler(message.sessionName, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "archiveTab":
-                  case "ARCHIVE_TAB":
-                    await archiveTab(message.tabId, message.tags, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "restoreSession":
-                  case "RESTORE_SESSION":
-                    await restoreSessionHandler(message.sessionName, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "suspendInactiveTabs":
-                    await suspendInactiveTabs(browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "getSessions":
-                    const sessions = await getSavedSessions(browserInstance);
-                    connectedPort.postMessage({ sessions });
-                    break;
-
-                  case "updateRules":
-                  case "UPDATE_RULES":
-                    await updateRulesHandler(message.rules, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "deleteSession":
-                    await deleteSessionHandler(message.sessionName, browserInstance);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "getState":
-                    connectedPort.postMessage({ state: store.getState() });
-                    break;
-
-                  case "DISPATCH_ACTION":
-                    store.dispatch(message.payload);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  case "getTab":
-                    const tab = await getTab(message.tabId);
-                    connectedPort.postMessage({ success: true, tab });
-                    break;
-
-                  case "suspendTab":
-                    const suspendedTab = await suspendTab(message.tabId);
-                    connectedPort.postMessage({ success: true, tab: suspendedTab });
-                    break;
-
-                  case "createTab":
-                    const newTab = await createTab(message.properties);
-                    connectedPort.postMessage({ success: true, tab: newTab });
-                    break;
-
-                  case "updateTab":
-                    const updatedTab = await updateTab(message.tabId, message.properties);
-                    connectedPort.postMessage({ success: true, tab: updatedTab });
-                    break;
-
-                  case "removeTab":
-                    await removeTab(message.tabId);
-                    connectedPort.postMessage({ success: true });
-                    break;
-
-                  default:
-                    console.warn("Unknown action:", message.action);
-                    connectedPort.postMessage({ error: "Unknown action" });
-                }
-              } catch (error) {
-                console.error('Error handling port message:', error);
-                connectedPort.postMessage({ type: 'ERROR', error: error.message });
-              }
-            };
-
-            // Define disconnect listener for this port
-            const disconnectListener = () => {
-              console.log('Port disconnected:', connectedPort.name);
-              connectedPorts.delete(connectedPort);
-              connectedPort.onMessage.removeListener(messageListener);
-              connectedPort.onDisconnect.removeListener(disconnectListener);
-            };
-
-            // Attach listeners
-            connectedPort.onMessage.addListener(messageListener);
-            connectedPort.onDisconnect.addListener(disconnectListener);
-
-            // Store listener references on the connectedPort
-            connectedPort._messageListener = messageListener;
-            connectedPort._disconnectListener = disconnectListener;
-
-            console.log('Connection listeners for "tabActivity" set up successfully.');
-          }
-        });
-        console.log("Additional runtime.onConnect listener for 'tabActivity' set up successfully.");
-      } else {
-        console.warn("runtime.onConnect.addListener is not available.");
-      }
-
-      // Setup runtime.onSuspend listener
-      if (
-        browserInstance.runtime.onSuspend &&
-        browserInstance.runtime.onSuspend.addListener
-      ) {
-        browserInstance.runtime.onSuspend.addListener(async () => {
-          console.log('Background service worker is suspending.');
-          await background._cleanup();
-        });
-        console.log("runtime.onSuspend listener set up successfully.");
-      } else {
-        console.warn("runtime.onSuspend.addListener is not available.");
-      }
-
-      // Setup runtime.onStartup listener
-      if (browserInstance.runtime.onStartup && browserInstance.runtime.onStartup.addListener) {
-        browserInstance.runtime.onStartup.addListener(() => {
-          console.log('Background service worker started on browser startup.');
-        });
-        console.log("runtime.onStartup listener set up successfully.");
-      } else {
-        console.warn("runtime.onStartup.addListener is not available.");
-      }
-
-      // Setup runtime.onError listener
-      if (browserInstance.runtime.onError && browserInstance.runtime.onError.addListener) {
-        browserInstance.runtime.onError.addListener((error) => {
-          console.error('Runtime error:', error);
-        });
-        console.log("runtime.onError listener set up successfully.");
-      } else {
-        console.warn("runtime.onError.addListener is not available.");
-      }
-
-      // Setup fetch event listener
-      self.addEventListener('fetch', (event) => {
-        background.handleFetch(event.request)
-          .then(response => {
-            if (response) {
-              event.respondWith(response);
-            }
-          })
-          .catch(error => {
-            console.error('Fetch handling error:', error);
-          });
-      });
-      console.log("Fetch event listener set up successfully.");
-
-      return; // Initialization successful
-    } catch (error) {
-      console.error("Error during background initialization:", error);
-      throw error; // Re-throw to signal initialization failure
-    }
-  },
-
-  /**
-   * Cleans up event listeners and ongoing processes.
-   * @returns {Promise<void>}
-   */
-  async _cleanup() {
-    try {
-      // Clear any pending timers
-      if (this._timeouts) {
-        this._timeouts.forEach(clearTimeout);
-        this._timeouts = [];
-      }
-
-      // Remove port listeners for all connected ports
-      for (const connectedPort of connectedPorts) {
-        if (connectedPort._messageListener) {
-          connectedPort.onMessage.removeListener(connectedPort._messageListener);
-        }
-        if (connectedPort._disconnectListener) {
-          connectedPort.onDisconnect.removeListener(connectedPort._disconnectListener);
-        }
-      }
-      connectedPorts.clear();
-
-      // Remove any alarms
-      if (browser.alarms) {
-        await browser.alarms.clearAll();
-        console.log("All alarms cleared successfully.");
-      }
-
-      console.log("Background service worker cleanup completed successfully.");
-    } catch (err) {
-      console.error('Error during cleanup:', err);
-    }
-  },
-
-  /**
-   * Handle fetch request for extension resources.
-   * @param {Request} request - The fetch request object.
-   * @returns {Promise<Response|undefined>}
-   */
-  handleFetch: async (request) => {
-    try {
-      const url = new URL(request.url);
-      if (url.protocol === 'chrome-extension:' || url.protocol === 'moz-extension:') {
-        // Handle extension resource requests if needed
-        return new Response('Extension resource handled');
-      }
-      return undefined; // Let the request proceed as normal
-    } catch (error) {
-      console.error('Error handling fetch:', error);
-      return undefined;
     }
   }
 };
 
-// Verify that the browser APIs are available
-if (!browser || !browser.tabs) {
-  console.error('Tabs API not available');
-} else {
-  // Assign browser to the global scope if necessary
-  self.browser = browser;
-
-  let nextRuleId = 1000; // Starting ID (ensure it doesn't clash with existing rules)
-
-  /**
-   * Adds a declarativeNetRequest rule with a unique ID.
-   * @param {string} urlFilter - The URL pattern to block.
-   * @returns {Promise<void>}
-   */
-  async function addBlockRule(urlFilter) {
+// Enhanced rule management
+const ruleManager = {
+  rules: new Map(),
+  
+  async activateRule(rule) {
     try {
-      const ruleId = nextRuleId++;
-      await new Promise((resolve, reject) => {
-        browser.declarativeNetRequest.updateDynamicRules({
-          addRules: [
-            {
-              id: ruleId,
-              priority: 1,
-              action: { type: 'block' },
-              condition: { urlFilter: urlFilter }
-            }
-          ],
-          removeRuleIds: [] // Add any rule IDs you want to remove here
-        }, () => {
-          if (browser.runtime.lastError) {
-            reject(browser.runtime.lastError);
-          } else {
-            resolve();
-          }
-        });
+      ruleValidator.validateRule(rule);
+      await this._applyRule(rule);
+      this.rules.set(rule.id, {
+        ...rule,
+        activatedAt: Date.now()
       });
-      console.log(`DeclarativeNetRequest rule added with ID: ${ruleId} for URL Filter: ${urlFilter}`);
+      return true;
     } catch (error) {
-      console.error("Error registering declarativeNetRequest rules:", error);
+      connection.logError(error, {
+        context: 'ruleActivation',
+        ruleId: rule.id,
+        severity: ERROR_CATEGORIES.SEVERITY.HIGH
+      });
+      return false;
     }
-  }
+  },
 
-  // Support both testing and service worker environments
-  if (typeof module !== 'undefined' && module.exports) {
-    /**
-     * Export the background module for testing or external use.
-     * This ensures compatibility with Node.js testing environments.
-     */
-    module.exports = background;
-  } else {
-    /**
-     * Initialize the background service worker when running in the browser context.
-     * This entry point sets up the extension's background processes.
-     */
-    background.initBackground(browser); // Pass the browser object
-  }
-}
-
-// Service Worker event listeners
-self.addEventListener('install', event => {
-  event.waitUntil(sw.install());
-});
-
-self.addEventListener('activate', event => {
-  event.waitUntil(sw.activate());
-});
-
-self.addEventListener('fetch', event => {
-  event.respondWith(sw.fetch(event));
-});
-
-// Update port connection handling
-const connections = new Map();
-
-browser.runtime.onConnect.addListener((port) => {
-  if (port.name === 'tabActivity') {
-    const connectionId = crypto.randomUUID();
-    
-    // Store connection
-    connections.set(connectionId, {
-      port,
-      timestamp: Date.now()
-    });
-    
-    // Send immediate acknowledgment
-    port.postMessage({
-      type: MESSAGE_TYPES.CONNECTION_ACK,
-      connectionId,
-      timestamp: Date.now()
-    });
-
-    // Setup message handler
-    port.onMessage.addListener(async (message) => {
+  async _applyRule(rule) {
+    const tabs = await browser.tabs.query({ url: rule.condition });
+    return processBatchOperations(tabs, async (tab) => {
       try {
-        const response = await handleMessage(message, { connectionId });
-        port.postMessage({
-          ...response,
-          requestId: message.requestId // Echo back requestId for message matching
+        await handleTabAction({
+          action: rule.action,
+          tabId: tab.id,
+          payload: rule.payload
         });
       } catch (error) {
-        port.postMessage({
-          type: MESSAGE_TYPES.ERROR,
-          error: error.message,
-          requestId: message.requestId
+        connection.logError(error, {
+          context: 'ruleApplication',
+          ruleId: rule.id,
+          tabId: tab.id
         });
       }
     });
-
-    // Cleanup on disconnect
-    port.onDisconnect.addListener(() => {
-      connections.delete(connectionId);
-      console.log(`Connection ${connectionId} closed`);
-    });
   }
-});
+};
 
-// Handle state sync in service worker context
-async function handleStateSync(client) {
+// Update telemetryTracker to use aggregation
+const telemetryTracker = {
+  events: new Map(),
+  
+  logEvent(category, event, data = {}) {
+    // Use aggregation for performance events
+    if (category === 'performance' || data.duration) {
+      telemetryAggregator.addEvent(category, event, data);
+      return;
+    }
+
+    // Direct logging for critical events
+    const eventData = {
+      timestamp: Date.now(),
+      category,
+      event,
+      data
+    };
+    
+    this.events.set(crypto.randomUUID(), eventData);
+    this._checkThresholds(eventData);
+  },
+  
+  _checkThresholds(event) {
+    const { category, data } = event;
+    const threshold = telemetryConfig.thresholds[category];
+    
+    if (threshold && data.duration > threshold) {
+      connection.logPerformance(category, data.duration, data);
+    }
+  },
+  
+  _pruneEvents() {
+    const now = Date.now();
+    const maxAge = STORAGE_CONFIG.RETENTION_PERIOD_MS;
+    
+    for (const [id, event] of this.events) {
+      if (now - event.timestamp > maxAge) {
+        this.events.delete(id);
+      }
+    }
+  }
+};
+
+// Enhanced state diffing
+function getStateDiff(currentState, lastState) {
+  if (!lastState) return currentState;
+  
+  const diff = {};
+  const processed = new Set();
+  
+  // Compare each key in both states
+  for (const [key, value] of Object.entries(currentState)) {
+    if (!deepEqual(value, lastState[key])) {
+      diff[key] = value;
+    }
+    processed.add(key);
+  }
+  
+  // Check for deleted keys
+  for (const key of Object.keys(lastState)) {
+    if (!processed.has(key)) {
+      diff[key] = null; // Mark as deleted
+    }
+  }
+  
+  return Object.keys(diff).length > 0 ? diff : null;
+}
+
+/**
+ * Initialize background service worker
+ */
+async function initialize() {
+  if (isInitialized) return;
+  
   try {
-    const state = store.getState();
-    await client.postMessage({
-      type: MESSAGE_TYPES.STATE_UPDATE,
-      payload: state
+    // Check for emergency backup
+    const { emergencyBackup } = await browser.storage.local.get('emergencyBackup');
+    if (emergencyBackup) {
+      console.warn('Recovering from emergency backup...');
+      await recoverFromEmergencyBackup(emergencyBackup);
+      await browser.storage.local.remove('emergencyBackup');
+    }
+
+    // Add startup handling
+    browser.runtime.onStartup.addListener(handleStartup);
+    browser.runtime.onSuspend.addListener(handleSuspend);
+    browser.runtime.onSuspendCanceled.addListener(handleSuspendCanceled);
+
+    // Set up enhanced message handling with validation
+    browser.runtime.onMessage.addListener((message, sender) => 
+      handleMessage(message, sender).catch(console.error)
+    );
+
+    // Set up connection handling with telemetry
+    browser.runtime.onConnect.addListener((port) => {
+      if (port.name === 'tabActivity') {
+        connection.handleConnection(port);
+      }
     });
+
+    // Set up tab lifecycle management
+    browser.tabs.onUpdated.addListener(handleTabUpdate);
+    browser.tabs.onRemoved.addListener(handleTabRemove);
+
+    // Initialize periodic tasks with performance monitoring
+    setupPeriodicTasks();
+
+    // Add crash recovery
+    await connection.recoverFromCrash();
+
+    // Load stored telemetry configuration
+    const stored = await browser.storage.local.get('telemetryThresholds');
+    if (stored.telemetryThresholds) {
+      Object.assign(telemetryConfig.thresholds, stored.telemetryThresholds);
+    }
+
+    // Initialize rule manager
+    const storedRules = await browser.storage.local.get('rules');
+    if (storedRules.rules) {
+      for (const rule of storedRules.rules) {
+        await ruleManager.activateRule(rule);
+      }
+    }
+
+    isInitialized = true;
+    console.log('Background service worker initialized');
   } catch (error) {
-    console.error('Failed to sync state:', error);
+    console.error('Background initialization failed:', error);
+    throw error;
   }
 }
 
-// Update service worker lifecycle events
-self.addEventListener('install', event => {
-  event.waitUntil((async () => {
-    await initializeStateFromStorage();
-    await self.skipWaiting();
-  })());
-});
-
-self.addEventListener('activate', event => {
-  event.waitUntil((async () => {
-    await self.clients.claim();
-    const clients = await self.clients.matchAll();
-    await Promise.all(clients.map(handleStateSync));
-  })());
-});
-
-export default background;
-
-// Utilize async/await for better asynchronous handling
-async function initializeBackground() {
+/**
+ * Enhanced message handling with validation and telemetry
+ */
+async function handleMessage(message, sender) {
+  const startTime = performance.now();
+  
   try {
-    await initializeStateFromStorage();
-    await setupAlarms(browser);
-    console.log('Background initialized successfully.');
+    validateMessage(message);
+    await checkPermissions(PERMISSION_TYPES.MESSAGING);
+
+    const response = await messageRouter(message, sender);
     
-    // Set up listeners using modern API practices
-    browser.runtime.onMessage.addListener(handleBackgroundMessage);
-    browser.runtime.onConnect.addListener(handlePortConnection);
-    
-    // ...additional initialization...
+    // Track performance
+    const duration = performance.now() - startTime;
+    if (duration > CONFIG.METRICS.THRESHOLDS.MESSAGE_PROCESSING) {
+      connection.logPerformance('messageProcessing', duration, { 
+        type: message.type 
+      });
+    }
+
+    return response;
   } catch (error) {
-    console.error('Error initializing background:', error);
+    connection.logError(error, {
+      context: 'messageHandling',
+      messageType: message?.type
+    });
+    return { error: error.message };
   }
 }
 
-initializeBackground();
+/**
+ * Add centralized message routing
+ */
+async function messageRouter(message, sender) {
+  telemetryTracker.logEvent('message', 'received', {
+    type: message.type,
+    timestamp: Date.now()
+  });
+  
+  try {
+    switch (message.type) {
+      case MESSAGE_TYPES.TAB_ACTION:
+        return handleTabAction(message.payload, sender);
+      case MESSAGE_TYPES.TAG_ACTION:
+        return handleTagAction(message.payload, sender);
+      case MESSAGE_TYPES.PERMISSION_REQUEST:
+        return handlePermissionRequest(message.payload);
+      case MESSAGE_TYPES.STATE_UPDATE:
+        return handleStateUpdate(message.payload);
+      case MESSAGE_TYPES.STATE_SYNC:
+        return handleStateSync();
+      case MESSAGE_TYPES.RULE_ACTION:
+        return handleRuleAction(message.payload, sender);
+      default:
+        throw new Error(`Unhandled message type: ${message.type}`);
+    }
+  } finally {
+    telemetryTracker.logEvent('message', 'completed', {
+      type: message.type,
+      duration: Date.now() - message.timestamp
+    });
+  }
+}
+
+/**
+ * Handle tag-related actions
+ */
+async function handleTagAction({ action, tabId, tag }, sender) {
+  try {
+    await checkPermissions(PERMISSION_TYPES.TABS);
+    
+    switch (action) {
+      case 'add': {
+        const result = await addTagToTab(tabId, tag);
+        store.dispatch(actions.tabManagement.updateMetadata(tabId, {
+          tags: result.tags,
+          lastTagged: Date.now()
+        }));
+        return result;
+      }
+      case 'remove':
+        return removeTagFromTab(tabId, tag);
+      case 'get':
+        return getTagsForTab(tabId);
+      default:
+        throw new Error(`Unsupported tag action: ${action}`);
+    }
+  } catch (error) {
+    connection.logError(error, {
+      context: 'tagAction',
+      action,
+      severity: ERROR_CATEGORIES.SEVERITY.MEDIUM
+    });
+    throw error;
+  }
+}
+
+/**
+ * Handle permission requests
+ */
+async function handlePermissionRequest({ permissions }) {
+  try {
+    const granted = await requestPermissions(permissions);
+    return { granted };
+  } catch (error) {
+    console.error('Permission request failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * Enhanced tab action handling with validation
+ */
+async function handleTabAction({ action, tabId, payload }, sender) {
+  try {
+    await checkPermissions(PERMISSION_TYPES.TABS);
+    
+    switch (action) {
+      case TAB_OPERATIONS.UPDATE: {
+        validateTab(payload);
+        const updatedTab = await updateTab(tabId, payload);
+        store.dispatch(actions.tabManagement.updateTab(updatedTab));
+        return updatedTab;
+      }
+      
+      case TAB_OPERATIONS.DISCARD: {
+        const tab = await getTab(tabId);
+        await discardTab(tabId);
+        store.dispatch(actions.tabManagement.updateTab({
+          id: tabId,
+          status: TAB_STATES.SUSPENDED
+        }));
+        return tab;
+      }
+      
+      case TAB_OPERATIONS.TAG: {
+        // Use tabManager's tag validation
+        if (!TAG_VALIDATION.TAG.PATTERN.test(payload.tag)) {
+          throw new Error('Invalid tag format');
+        }
+        return addTagToTab(tabId, payload.tag);
+      }
+
+      case 'suspend':
+        return TabLifecycle.suspend(tabId);
+      case 'resume':
+        return TabLifecycle.resume(tabId);
+      default:
+        throw new Error(`Unsupported tab action: ${action}`);
+    }
+  } catch (error) {
+    connection.logError(error, { context: 'tabAction', action });
+    throw error;
+  }
+}
+
+/**
+ * Handle state updates with validation
+ */
+async function handleStateUpdate(payload) {
+  try {
+    await validateStateUpdate(payload.type, payload.data);
+    store.dispatch({
+      type: payload.type,
+      payload: payload.data
+    });
+    return true;
+  } catch (error) {
+    console.error('State update failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * Handle state synchronization using connectionManager
+ */
+async function handleStateSync() {
+  const currentState = store.getState();
+  const diff = getStateDiff(currentState, connection.lastSyncedState);
+  
+  if (diff) {
+    try {
+      await connection.broadcastMessage({
+        type: MESSAGE_TYPES.STATE_SYNC,
+        payload: diff
+      });
+      connection.lastSyncedState = currentState;
+      return true;
+    } catch (error) {
+      connection.logError(error, {
+        context: 'stateSync',
+        severity: ERROR_CATEGORIES.SEVERITY.HIGH,
+        stateDiff: Object.keys(diff)
+      });
+      throw error;
+    }
+  }
+  return false;
+}
+
+/**
+ * Handle new connections using connectionManager
+ */
+function handleConnection(port) {
+  if (port.name === 'tabActivity') {
+    connection.handleConnection(port, async (msg) => {
+      try {
+        const response = await handleMessage(msg, port.sender);
+        return {
+          type: msg.type,
+          payload: response,
+          requestId: msg.requestId
+        };
+      } catch (error) {
+        return {
+          type: ERROR_TYPES.ERROR,
+          payload: { error: error.message },
+          requestId: msg.requestId
+        };
+      }
+    });
+  }
+}
+
+/**
+ * Handle tab updates
+ */
+async function handleTabUpdate(tabId, changeInfo, tab) {
+  if (changeInfo.status === 'complete') {
+    store.dispatch(actions.tabManagement.updateTab({
+      ...tab,
+      lastAccessed: Date.now()
+    }));
+  }
+}
+
+/**
+ * Handle tab removal
+ */
+function handleTabRemove(tabId) {
+  store.dispatch(actions.tabManagement.removeTab(tabId));
+}
+
+/**
+ * Enhanced periodic tasks using connectionManager state sync
+ */
+function setupPeriodicTasks() {
+  // Critical tasks remain interval-based
+  setInterval(async () => {
+    const tabs = await browser.tabs.query({});
+    await processBatchOperations(tabs, async (tab) => {
+      const activity = store.getState().tabActivity[tab.id];
+      if (activity?.lastAccessed < Date.now() - CONFIG.INACTIVITY_THRESHOLDS.SUSPEND) {
+        await TabLifecycle.suspend(tab.id);
+      }
+    });
+  }, CONFIG.TIMEOUTS.CLEANUP);
+
+  // Non-urgent tasks use requestIdleCallback
+  const scheduleSync = () => {
+    requestIdleCallback(async () => {
+      try {
+        await connection.syncState();
+      } finally {
+        scheduleSync();
+      }
+    }, { timeout: 10000 });
+  };
+
+  scheduleSync();
+
+  // Add rule validation check
+  setInterval(async () => {
+    for (const [id, rule] of ruleManager.rules) {
+      try {
+        const isValid = await ruleValidator.validateRule(rule);
+        if (!isValid) {
+          connection.logError(new Error('Rule validation failed'), {
+            context: 'ruleValidation',
+            ruleId: id,
+            severity: ERROR_CATEGORIES.SEVERITY.HIGH
+          });
+          ruleManager.rules.delete(id);
+        }
+      } catch (error) {
+        console.error(`Rule validation error for ${id}:`, error);
+      }
+    }
+  }, CONFIG.TIMEOUTS.RULE_VALIDATION);
+}
+
+/**
+ * Add graceful shutdown
+ */
+async function shutdown() {
+  try {
+    clearInterval(metricsInterval);
+    await connection.shutdown();
+    await store.persist();
+    console.log('Background service worker shutdown complete');
+  } catch (error) {
+    console.error('Shutdown error:', error);
+  }
+}
+
+// Add lifecycle event handlers
+async function handleStartup() {
+  try {
+    await connection.recoverFromCrash();
+    await store.rehydrate();
+    console.log('Service worker started');
+  } catch (error) {
+    connection.logError(error, {
+      context: 'startup',
+      severity: ERROR_CATEGORIES.SEVERITY.HIGH
+    });
+  }
+}
+
+async function handleSuspend() {
+  try {
+    await gracefulShutdown();
+  } catch (error) {
+    connection.logError(error, {
+      context: 'suspend',
+      severity: ERROR_CATEGORIES.SEVERITY.HIGH
+    });
+  }
+}
+
+function handleSuspendCanceled() {
+  if (shutdownTimer) {
+    clearTimeout(shutdownTimer);
+    shutdownTimer = null;
+  }
+}
+
+// Add enhanced shutdown with recovery steps
+async function gracefulShutdown() {
+  const SHUTDOWN_TIMEOUT = 5000;
+  const errors = [];
+  
+  try {
+    // Signal shutdown start
+    const shutdownStarted = Date.now();
+    
+    // Execute shutdown steps with individual error handling
+    const steps = [
+      {
+        name: 'flushTelemetry',
+        action: async () => {
+          await telemetryAggregator.flush();
+          clearInterval(metricsInterval);
+        }
+      },
+      {
+        name: 'persistState',
+        action: async () => {
+          await store.persist();
+        }
+      },
+      {
+        name: 'cleanupConnections',
+        action: async () => {
+          await connection.shutdown();
+        }
+      }
+    ];
+
+    // Execute steps with timeout protection
+    await Promise.race([
+      executeShutdownSteps(steps, errors),
+      new Promise((_, reject) => {
+        shutdownTimer = setTimeout(() => {
+          reject(new Error('Shutdown timed out'));
+        }, SHUTDOWN_TIMEOUT);
+      })
+    ]);
+
+    // Clear timeout if successful
+    if (shutdownTimer) {
+      clearTimeout(shutdownTimer);
+    }
+
+    // Log shutdown results
+    const shutdownDuration = Date.now() - shutdownStarted;
+    console.log(`Graceful shutdown completed in ${shutdownDuration}ms`);
+    
+    // Report any non-critical errors
+    if (errors.length > 0) {
+      console.warn('Non-critical shutdown errors:', errors);
+    }
+  } catch (error) {
+    // Log critical shutdown failure
+    connection.logError(error, {
+      context: 'shutdown',
+      severity: ERROR_CATEGORIES.SEVERITY.CRITICAL,
+      errors: errors
+    });
+    
+    // Attempt emergency cleanup
+    await emergencyCleanup();
+    throw error;
+  }
+}
+
+// Add helper for sequential shutdown steps
+async function executeShutdownSteps(steps, errors) {
+  for (const { name, action } of steps) {
+    try {
+      await action();
+    } catch (error) {
+      errors.push({ step: name, error: error.message });
+      // Continue with next step unless fatal
+      if (name === 'persistState') {
+        throw error; // State persistence is critical
+      }
+    }
+  }
+}
+
+// Add emergency cleanup for critical failures
+async function emergencyCleanup() {
+  try {
+    // Force close all connections
+    for (const [id] of connection.connections) {
+      try {
+        await connection.disconnect(id);
+      } catch (e) {
+        console.error(`Failed to close connection ${id}:`, e);
+      }
+    }
+
+    // Attempt minimal state persistence
+    const criticalState = {
+      timestamp: Date.now(),
+      tabs: store.getState().tabs,
+      rules: Array.from(ruleManager.rules.values())
+    };
+
+    await browser.storage.local.set({
+      emergencyBackup: criticalState
+    });
+  } catch (error) {
+    console.error('Emergency cleanup failed:', error);
+  }
+}
+
+// Update initialization to check for emergency backup
+async function initialize() {
+  if (isInitialized) return;
+  
+  try {
+    // Check for emergency backup
+    const { emergencyBackup } = await browser.storage.local.get('emergencyBackup');
+    if (emergencyBackup) {
+      console.warn('Recovering from emergency backup...');
+      await recoverFromEmergencyBackup(emergencyBackup);
+      await browser.storage.local.remove('emergencyBackup');
+    }
+
+    // ...existing initialization code...
+  } catch (error) {
+    console.error('Background initialization failed:', error);
+    throw error;
+  }
+}
+
+// Add recovery from emergency backup
+async function recoverFromEmergencyBackup(backup) {
+  try {
+    // Restore critical state
+    if (backup.tabs) {
+      store.dispatch(actions.tabManagement.restoreTabs(backup.tabs));
+    }
+    
+    if (backup.rules) {
+      for (const rule of backup.rules) {
+        await ruleManager.activateRule(rule);
+      }
+    }
+
+    console.log('Emergency backup recovery completed');
+  } catch (error) {
+    console.error('Failed to recover from emergency backup:', error);
+    throw error;
+  }
+}
+
+// Initialize with crash recovery and shutdown handling
+initialize().catch(console.error);
+
+browser.runtime.onSuspend.addListener(() => {
+  shutdown().catch(console.error);
+});
+
+// Initialize with enhanced error handling
+initialize().catch(error => {
+  connection.logError(error, {
+    context: 'initialization',
+    severity: ERROR_CATEGORIES.SEVERITY.CRITICAL
+  });
+});
+
+// Add rule-specific message handling
+async function handleRuleAction({ action, rule }, sender) {
+  try {
+    switch (action) {
+      case 'activate':
+        return ruleManager.activateRule(rule);
+      case 'deactivate':
+        return ruleManager.rules.delete(rule.id);
+      case 'update':
+        await ruleManager.rules.delete(rule.id);
+        return ruleManager.activateRule(rule);
+      default:
+        throw new Error(`Unsupported rule action: ${action}`);
+    }
+  } catch (error) {
+    connection.logError(error, {
+      context: 'ruleAction',
+      action,
+      ruleId: rule?.id
+    });
+    throw error;
+  }
+}
+
+// Export for testing
+export const __testing__ = {
+  handleMessage,
+  messageRouter,
+  handleTabAction,
+  handleTagAction,
+  handlePermissionRequest,
+  handleStateSync,
+  ruleValidator,
+  telemetryConfig,
+  gracefulShutdown,
+  ruleManager,
+  telemetryTracker,
+  getStateDiff,
+  telemetryAggregator,
+  executeShutdownSteps,
+  emergencyCleanup,
+  recoverFromEmergencyBackup
+};

@@ -1,3 +1,5 @@
+// build-scripts/build-chrome.mjs
+
 import fs from 'fs-extra';
 import path from 'path';
 import { execSync } from 'child_process';
@@ -104,23 +106,37 @@ function packageExtension() {
 
 // Sequential build process ensures dependency order and clean state
 export async function buildChrome() {
-  cleanBuild();
+  // Remove the second "Cleaning previous Chrome build..." log
+  console.log('Cleaning previous Chrome build...');
   
-  // Run Webpack first to generate the output files
-  execSync('webpack --env target=chrome --config webpack.config.js', { stdio: 'inherit' });
-  
-  // After webpack outputs, copy necessary files
-  copyChromeFiles();
-  copyNonCompiledSource();
-  copyTestFiles();
+  try {
+    cleanBuild();
+    
+    // Run Webpack first to generate the output files
+    execSync('webpack --env target=chrome --config webpack.config.js', {
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: 'production' }
+    });
+    
+    // After webpack outputs, copy necessary files
+    copyChromeFiles();
+    copyNonCompiledSource();
+    copyTestFiles();
 
-  await optimizeAssets();
-  
-  packageExtension();
-  console.log('Chrome build completed successfully.');
+    await optimizeAssets();
+    
+    packageExtension();
+    console.log('Chrome build completed successfully.');
+  } catch (error) {
+    console.error('Build failed:', error.message);
+    process.exit(1);
+  }
 }
 
 // Direct execution for CLI usage and CI/CD integration
 if (__filename === process.argv[1]) { // Changed condition to properly compare file paths
-  buildChrome();
+  buildChrome().catch(err => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
 }

@@ -42,6 +42,8 @@ async function saveOptions() {
     setTimeout(() => {
       document.getElementById('save-success').classList.remove('visible');
     }, 2000);
+
+    store.dispatch({ type: ACTION_TYPES.STATE.INITIALIZE, payload: {/* ... */} });
   } catch (error) {
     console.error('Error saving options:', error.message);
   }

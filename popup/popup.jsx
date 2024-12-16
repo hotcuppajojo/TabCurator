@@ -2,13 +2,12 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom';
 import browser from 'webextension-polyfill'; // Ensure proper import
-import { CONNECTION_NAME } from '../background/constants.js'; // Import CONNECTION_NAME to ensure consistency
 import { connection } from '../utils/connectionManager.js';
 import { 
   store, 
   actions, 
   getSavedSessions 
-} from '../utils/stateManager.js';
+} from '../utils/stateManager.ts'; // Corrected import path
 import { MESSAGE_TYPES } from '../utils/types.js';
 
 // Establish a persistent connection with the background script using the consistent CONNECTION_NAME

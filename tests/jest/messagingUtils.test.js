@@ -12,6 +12,7 @@ const {
   BATCH_SIZE
 } = require('../../src/utils/messagingUtils.js');
 const { store } = require('../../src/utils/stateManager.js');
+import { ACTION_TYPES, MESSAGE_TYPES } from '../../utils/constants.js'; // Import action types and message types
 
 // Remove redundant constant as it's now imported
 // const MAX_QUEUE_SIZE = 100;
@@ -141,7 +142,7 @@ describe('Messaging Utils', () => {
 
     test('should handle dispatch actions', async () => {
       const mockMessage = {
-        action: 'DISPATCH_ACTION',
+        action: ACTION_TYPES.TAB.UPDATE_ACTIVITY, // Use defined action type
         payload: { type: 'TEST_ACTION', data: 'test' }
       };
       const mockSendResponse = jest.fn();

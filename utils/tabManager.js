@@ -1,36 +1,39 @@
-// utils/tabManager.js
 /**
- * @fileoverview Unified tab management utilities.
- * Handles tab operations, querying, and suspension.
+ * @fileoverview Tab Manager Module - Handles tab operations with background.js coordination
+ * 
+ * Architecture Notes:
+ * - This module acts as a tab operations facade, delegating validation and state management
+ * - All validation is handled by background.js (service worker)
+ * - State updates are managed by stateManager.js
+ * - Bookmark operations are centralized in background.js
+ * 
+ * Primary Responsibilities:
+ * - Tab lifecycle operations (create, update, remove, discard)
+ * - Tab metadata handling
+ * - Batch processing of tab operations
+ * 
+ * @module tabManager
  */
-import browser from 'webextension-polyfill';
-import { store } from './stateManager.js';
-import { updateTabActivity, archiveTab, actions } from './stateManager.js';
-import { getOrCreateTabCuratorFolder } from './tagUtils.js';
-import { MESSAGE_TYPES, checkPermissions, PERMISSIONS } from './messagingUtils.js';
-import { TAB_STATES, VALIDATION_TYPES } from './types.js';
 
-// Add explicit permission requirements
-export const REQUIRED_PERMISSIONS = Object.freeze({
-  BASE: ['tabs'],
-  OPTIONAL: ['declarativeNetRequest']
-});
+import browser from 'webextension-polyfill';
+import { store } from './stateManager.ts';
+import { updateTabActivity, archiveTab, actions } from './stateManager.js';
+import { MESSAGE_TYPES, checkPermissions } from './messagingUtils.js';
+import { 
+  TAB_STATES,
+  CONFIG,
+  VALIDATION_TYPES,
+  TAB_PERMISSIONS,
+  // ...existing imports...
+} from './constants.js';
 
 // Add permission validation
 export async function validatePermissions(type = 'BASE') {
   const permissions = await browser.permissions.getAll();
-  return REQUIRED_PERMISSIONS[type].every(
+  return TAB_PERMISSIONS[type].every(
     p => permissions.permissions.includes(p)
   );
 }
-
-// Add MV3 specific tab handling
-export const TAB_OPERATIONS = Object.freeze({
-  DISCARD: 'discard',
-  BOOKMARK: 'bookmark',
-  ARCHIVE: 'archive',
-  UPDATE: 'update'
-});
 
 // Add operation validation
 export const validateOperation = async (operation, tab) => {
@@ -46,11 +49,19 @@ export const validateOperation = async (operation, tab) => {
   return true;
 };
 
-// Add inactivity threshold management
-export const INACTIVITY_THRESHOLDS = Object.freeze({
-  PROMPT: 1800000, // 30 minutes
-  SUSPEND: 3600000  // 1 hour
+// Add MV3 specific tab handling
+export const TAB_OPERATIONS = Object.freeze({
+  DISCARD: 'discard',
+  BOOKMARK: 'bookmark',
+  ARCHIVE: 'archive',
+  UPDATE: 'update'
 });
+
+// Add inactivity threshold management
+export const INACTIVITY_THRESHOLDS = {
+  PROMPT: 600000, // 10 minutes
+  SUSPEND: 1800000, // 30 minutes
+};
 
 /**
  * Queries tabs based on the provided query info.
@@ -149,56 +160,18 @@ export async function removeTab(tabId) {
 }
 
 /**
- * Discards a tab by unloading it from memory, bookmarking it first for safety.
- * @param {number} tabId - The ID of the tab to discard.
- * @param {Object} [criteria] - Optional criteria to check before discarding.
+ * Wrapper for discarding a tab - coordinates with background.js for validation
+ * @param {number} tabId - The ID of the tab to discard
+ * @param {Object} [criteria] - Optional criteria to check
  * @returns {Promise<void>}
  */
 export async function discardTab(tabId, criteria) {
-  if (!await checkPermissions('TABS')) {
-    throw new Error('Required tab permissions not granted');
-  }
-
-  try {
-    const tab = await browser.tabs.get(tabId);
-    if (!tab) {
-      console.warn(`Tab with ID ${tabId} does not exist.`);
-      return;
-    }
-
-    // Check if tab should not be discarded
-    if (tab.active || tab.pinned) {
-      console.warn(`Cannot discard active or pinned tab with ID: ${tabId}.`);
-      return;
-    }
-
-    // Check optional criteria
-    if (criteria?.urlPattern && !criteria.urlPattern.test(tab.url)) {
-      console.info(`Tab ${tabId} does not meet criteria for discarding.`);
-      return;
-    }
-
-    // First bookmark the tab for safety
-    if (browser.bookmarks) {
-      try {
-        await bookmarkTab(tabId);
-        console.log(`Bookmarked tab before discarding: ${tab.title}`);
-      } catch (bookmarkError) {
-        console.error(`Failed to bookmark tab ${tabId}:`, bookmarkError);
-        // Continue with discard even if bookmark fails
-      }
-    }
-
-    await browser.tabs.discard(tabId);
-    console.log(`Tab ${tabId} discarded successfully.`);
-  } catch (error) {
-    console.error(`Error discarding tab ${tabId}:`, error);
-    if (error.message.includes("No tab with id")) {
-      console.warn(`Tab ${tabId} already closed or does not exist.`);
-    } else {
-      throw error;
-    }
-  }
+  // Send to background.js for validation and processing
+  await browser.runtime.sendMessage({
+    type: MESSAGE_TYPES.TAB_ACTION,
+    action: 'discard',
+    payload: { tabId, criteria }
+  });
 }
 
 /**
@@ -227,43 +200,16 @@ export async function discardInactiveTabs() {
 }
 
 /**
- * Bookmarks a tab in the 'TabCurator' folder.
- * Ensures the Bookmarks API is available.
- * @param {number} tabId - The ID of the tab to bookmark.
- * @returns {Promise<void>}
+ * Updates tab metadata through background.js validation
+ * @param {number} tabId - Tab ID to update
+ * @param {Object} metadata - Metadata to update
  */
-export async function bookmarkTab(tabId) {
-  try {
-    if (!browser.bookmarks) {
-      throw new Error('Bookmarks API not available');
-    }
-
-    const tab = await browser.tabs.get(tabId);
-    if (!tab) {
-      throw new Error(`Tab with ID ${tabId} does not exist.`);
-    }
-
-    // Use the shared folder management function from tagUtils.js
-    const folder = await getOrCreateTabCuratorFolder();
-
-    // Create the bookmark
-    await browser.bookmarks.create({
-      parentId: folder.id,
-      title: tab.title,
-      url: tab.url
-    });
-
-    await browser.runtime.sendMessage({
-      type: MESSAGE_TYPES.TAB_ACTION,
-      action: 'bookmark',
-      payload: { tabId }
-    });
-
-    console.log(`Tab ${tabId} bookmarked in 'TabCurator' folder.`);
-  } catch (error) {
-    console.error(`Failed to bookmark tab ${tabId}:`, error);
-    throw error;
-  }
+export async function updateTabMetadata(tabId, metadata) {
+  await browser.runtime.sendMessage({
+    type: MESSAGE_TYPES.TAB_ACTION,
+    action: 'updateMetadata',
+    payload: { tabId, metadata }
+  });
 }
 
 /**
@@ -278,9 +224,9 @@ export async function checkInactiveTabs() {
     const lastActivity = store.getState().tabActivity[tab.id] || now;
     const inactiveTime = now - lastActivity;
 
-    if (inactiveTime >= INACTIVITY_THRESHOLDS.SUSPEND) {
+    if (inactiveTime >= CONFIG.INACTIVITY_THRESHOLDS.SUSPEND) {
       await discardTab(tab.id);
-    } else if (inactiveTime >= INACTIVITY_THRESHOLDS.PROMPT) {
+    } else if (inactiveTime >= CONFIG.INACTIVITY_THRESHOLDS.PROMPT) {
       store.dispatch({ 
         type: 'SET_TAGGING_PROMPT_ACTIVE', 
         payload: { tabId: tab.id, value: true } 
@@ -347,10 +293,237 @@ export async function* processTabBatch(tabs, size = 10) {
   }
 }
 
+// Add tag-related constants
+export const TAG_TYPES = Object.freeze({
+  AUTOMATED: 'automated',
+  MANUAL: 'manual'
+});
+
+export const RULE_TYPES = Object.freeze({
+  URL_PATTERN: 'urlPattern',
+  TITLE_PATTERN: 'titlePattern'
+});
+
+export const TAG_OPERATIONS = Object.freeze({
+  ADD: 'add',
+  REMOVE: 'remove',
+  UPDATE: 'update'
+});
+
+export const VALIDATION = Object.freeze({
+  TAG: {
+    MAX_LENGTH: 50,
+    PATTERN: /^[a-zA-Z0-9-_]+$/
+  },
+  RULE: {
+    MAX_CONDITIONS: 10
+  }
+});
+
+// Add validation functions from tagUtils.js
+export function validateTag(tag) {
+  if (!tag || typeof tag !== 'string') {
+    throw new TypeError('Tag must be a non-empty string');
+  }
+  if (!TAG_VALIDATION.TAG.PATTERN.test(tag)) {
+    throw new Error('Tag contains invalid characters');
+  }
+  if (tag.length > TAG_VALIDATION.TAG.MAX_LENGTH) {
+    throw new Error(`Tag exceeds maximum length of ${TAG_VALIDATION.TAG.MAX_LENGTH}`);
+  }
+  return true;
+}
+
+export const validateRule = (rule) => {
+  const requiredFields = ['id', 'condition', 'action'];
+  if (!requiredFields.every(field => field in rule)) {
+    throw new Error('Invalid rule format');
+  }
+  return true;
+};
+
+// Add tag-related operations
+export async function tagTab(tabId, tag) {
+  try {
+    validateTag(tag);
+    const tab = await getTab(tabId);
+    
+    // Add the tag to the tab's title
+    const updatedTab = await updateTab(tabId, { 
+      title: `[${tag}] ${tab.title}` 
+    });
+    
+    // Update state to track the tag
+    store.dispatch(actions.tab.updateMetadata(tabId, {
+      tags: [...(tab.tags || []), tag],
+      lastTagged: Date.now()
+    }));
+    
+    return updatedTab;
+  } catch (error) {
+    console.error(`Failed to tag tab ${tabId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Processes tabs in batches with progress tracking
+ * @param {Array<browser.tabs.Tab>} tabs - Array of tabs to process
+ * @param {Function} processor - Processing function for each tab
+ * @param {Object} options - Processing options
+ * @param {number} [options.batchSize=10] - Size of each batch
+ * @param {Function} [options.onProgress] - Progress callback
+ * @returns {Promise<Array>} Results of processing
+ */
+export async function processTabs(tabs, processor, { 
+  batchSize = CONFIG.BATCH.SIZE,
+  onProgress
+} = {}) {
+  const results = [];
+  let processed = 0;
+  
+  for (let i = 0; i < tabs.length; i += batchSize) {
+    const batch = tabs.slice(i, i + batchSize);
+    const batchResults = await Promise.all(
+      batch.map(tab => processor(tab))
+    );
+    
+    results.push(...batchResults);
+    processed += batch.length;
+    
+    if (onProgress) {
+      onProgress(processed / tabs.length);
+    }
+  }
+  
+  return results;
+}
+
+// Add rule management functionality
+export const convertToDeclarativeRules = (rules) => {
+  if (!Array.isArray(rules)) {
+    throw new TypeError('Rules must be an array');
+  }
+  
+  return rules.map((rule, id) => ({
+    id: id + 1,
+    priority: 1,
+    condition: {
+      urlFilter: rule.condition,
+      resourceTypes: ['main_frame'],
+      domains: rule.domains || []
+    },
+    action: {
+      type: 'modifyHeaders',
+      responseHeaders: [{ 
+        header: 'X-TabCurator-Tag', 
+        operation: 'set', 
+        value: rule.tag 
+      }]
+    }
+  }));
+};
+
+export const activateRules = async (rules) => {
+  try {
+    const declarativeRules = await convertToDeclarativeRules(rules);
+    await browser.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: rules.map((_, i) => i + 1),
+      addRules: declarativeRules
+    });
+  } catch (error) {
+    console.error('Failed to activate rules:', error);
+    throw error;
+  }
+};
+
+// Add rule application functionality
+export async function applyRulesToTab(tab, browserInstance, store) {
+  if (!browserInstance?.declarativeNetRequest) {
+    throw new Error("Declarative Net Request API not available");
+  }
+
+  try {
+    const { rules = [] } = await browserInstance.storage.sync.get("rules");
+    
+    for (const rule of rules) {
+      try {
+        if (!rule.condition || !rule.action) continue;
+
+        const matches = tab.url.includes(rule.condition) || 
+                       tab.title.includes(rule.condition);
+        
+        if (matches) {
+          const [actionType, tag] = rule.action.split(": ");
+          
+          if (actionType === 'Tag') {
+            const tabData = {
+              title: tab.title,
+              url: tab.url,
+              timestamp: Date.now()
+            };
+
+            await Promise.all([
+              archiveTabAction(tab.id, tag, tabData),
+              store.dispatch({ 
+                type: MESSAGE_TYPES.RULE_UPDATE,
+                payload: { 
+                  tag, 
+                  tabData,
+                  ruleId: rule.id
+                }
+              })
+            ]);
+            
+            break;
+          }
+        }
+      } catch (ruleError) {
+        console.error(`Error processing rule for tab ${tab.id}:`, ruleError);
+      }
+    }
+  } catch (error) {
+    console.error(`Error applying rules to tab (ID: ${tab.id}):`, error);
+    throw error;
+  }
+}
+
+// Add batch processing for rules
+export async function* processRulesBatch(rules, size = 10) {
+  for (let i = 0; i < rules.length; i += size) {
+    yield rules.slice(i, i + size);
+  }
+}
+
+/**
+ * Processes a batch of tab operations with background.js coordination
+ * @param {Array<Object>} operations - Array of tab operations
+ * @returns {Promise<Array>} Results of operations
+ */
+export async function processBatchOperations(operations) {
+  return browser.runtime.sendMessage({
+    type: MESSAGE_TYPES.TAB_ACTION,
+    action: 'batchProcess',
+    payload: { operations }
+  });
+}
+
+// Public interface - explicit exports with documentation
 export {
-  // ...existing exports...
-  archiveTab,
-  suspendInactiveTabs,
-  suspendTab,
-  // ...existing exports...
+  // Core Tab Operations
+  getTab,         // Fetches tab data
+  createTab,      // Creates new tab
+  updateTab,      // Updates existing tab
+  removeTab,      // Removes/closes tab
+  
+  // Tab State Management
+  updateTabMetadata,  // Updates tab metadata through background.js
+  discardTab,        // Discards tab with background.js validation
+  
+  // Batch Operations
+  processBatchOperations, // Processes multiple tab operations
+  
+  // Types & Constants
+  TAB_OPERATIONS,    // Valid tab operations
+  TAB_STATES        // Tab state constants
 };
