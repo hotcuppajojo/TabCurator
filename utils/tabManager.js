@@ -24,7 +24,6 @@ import {
   CONFIG,
   VALIDATION_TYPES,
   TAB_PERMISSIONS,
-  // ...existing imports...
 } from './constants.js';
 
 // Add permission validation

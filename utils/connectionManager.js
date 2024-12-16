@@ -51,9 +51,9 @@ class ConnectionManager {
     this.messageQueue = [];
     this.isProcessingQueue = false;
     this.retryCount = 0;
-    this.maxRetries = 3;
+    this.maxRetries = CONFIG.RETRY.MAX_ATTEMPTS;
     this.lastStateSync = null;
-    this.retryDelays = CONFIG.RETRY.DELAYS || [1000, 2000, 4000, 8000];
+    this.retryDelays = CONFIG.RETRY.DELAYS;
     this.metrics = {
       errors: new Map(),
       performance: new Map(),
@@ -61,7 +61,7 @@ class ConnectionManager {
       lastReport: Date.now()
     };
     this.lastCleanup = Date.now();
-    this.cleanupInterval = 300000; // 5 minutes
+    this.cleanupInterval = CONFIG.TIMEOUTS.CLEANUP;
 
     // Add dynamic configuration storage
     this.dynamicConfig = new Map();
@@ -76,7 +76,7 @@ class ConnectionManager {
     this.initializeValidators();
     
     // Add storage quota tracking
-    this.storageQuota = CONFIG_SCHEMAS.METRICS.properties.STORAGE_QUOTA_BYTES.default;
+    this.storageQuota = CONFIG.STORAGE.QUOTA.DEFAULT_BYTES;
     this.metricsSize = 0;
 
     // Add telemetry handling
@@ -1020,7 +1020,7 @@ class ConnectionManager {
    * @private
    */
   _storeUnsyncedChanges(changes) {
-    if (this.unsyncedChanges.size >= STORAGE_CONFIG.SYNC.MAX_UNSYNCED) {
+    if (this.unsyncedChanges.size >= CONFIG.THRESHOLDS.SYNC_QUEUE) {
       this._sendTelemetry({
         type: 'SYNC_QUEUE_FULL',
         severity: TELEMETRY_CONFIG.LEVELS.WARN,
@@ -1053,7 +1053,7 @@ class ConnectionManager {
       // Attempt to sync any pending changes
       await this._syncPendingChanges();
 
-      // Existing shutdown logic
+      // Clean up connections
       await this._cleanupConnections();
       this._resetState();
 
@@ -1090,8 +1090,6 @@ class ConnectionManager {
       timeoutPromise
     ]);
   }
-
-  // ...existing code...
 }
 
 // developer documentation

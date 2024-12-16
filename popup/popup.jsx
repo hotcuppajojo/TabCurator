@@ -57,7 +57,6 @@ function Popup() {
             case 'ERROR':
               handleError(message.error);
               break;
-            // ...handle other message types
           }
         });
 
@@ -187,7 +186,6 @@ function Popup() {
    */
   const handlePortDisconnect = () => {
     console.error("Disconnected from background script.");
-    // Optionally, you can attempt to reconnect or update the UI accordingly
   };
 
   /**

@@ -140,17 +140,14 @@ export const ACTION_TYPES = Object.freeze({
     ARCHIVE: 'ARCHIVE_TAB',
     UPDATE_ACTIVITY: 'UPDATE_TAB_ACTIVITY',
     SET_TAGGING_PROMPT: 'SET_TAGGING_PROMPT',
-    // Add other TAB action types as needed
   },
   SESSION: {
     SAVE_SESSION: 'SAVE_SESSION',
     RESTORE_SESSION: 'RESTORE_SESSION',
     DELETE_SESSION: 'DELETE_SESSION',
-    // Add other SESSION action types as needed
   },
   RULES: {
     UPDATE_RULES: 'UPDATE_RULES',
-    // Add other RULES action types as needed
   },
 });
 
@@ -200,117 +197,72 @@ export const PERMISSIONS = Object.freeze({
 
 // Configuration Constants
 export const CONFIG = Object.freeze({
-  QUEUE: {
+  TIMEOUTS: {
+    SHUTDOWN: 5000,
+    SYNC: 10000,
+    CLEANUP: 300000, // 5 minutes
+    RULE_VALIDATION: 60000, // 1 minute
+    CONNECTION: 5000,
+    MESSAGE: 3000,
+    BATCH: 30000,
+    EMERGENCY: 5000
+  },
+  THRESHOLDS: {
+    MESSAGE_PROCESSING: 50,
+    STATE_SYNC: 100,
+    BATCH_PROCESSING: 200,
+    PERFORMANCE_WARNING: 16.67, // 60fps frame time
+    STORAGE_WARNING: 0.8, // 80% usage warning
+    SYNC_QUEUE: 100 // Maximum unsynced changes
+  },
+  BATCH: {
     MAX_SIZE: 100,
-    BATCH_SIZE: 10
+    DEFAULT_SIZE: 10,
+    TIMEOUT: 5000,
+    FLUSH_SIZE: 50 // Size before auto-flush for telemetry
   },
-  RETRY: {
-    DELAY: 1000,
-    MAX_ATTEMPTS: 5,
-    COOLDOWN: 10000
+  STORAGE: {
+    QUOTA: {
+      MIN_BYTES: 1048576, // 1MB
+      MAX_BYTES: 10485760, // 10MB
+      DEFAULT_BYTES: 5242880 // 5MB
+    },
+    SYNC: {
+      MAX_RETRIES: 3,
+      BACKOFF_MS: 1000,
+      MAX_UNSYNCED: 100
+    },
+    RETENTION: {
+      METRICS: 86400000, // 24 hours
+      EVENTS: 3600000 // 1 hour
+    }
   },
-  CONNECTION: {
-    NAME: 'content-connection'
-  },
-  INACTIVITY_THRESHOLDS: {
-    PROMPT: 600000,  // 10 minutes
-    SUSPEND: 1800000 // 30 minutes
+  TELEMETRY: {
+    BATCH_SIZE: 10,
+    FLUSH_INTERVAL: 30000,
+    REPORTING_INTERVAL: 300000, // 5 minutes
+    MAX_ENTRIES: 1000,
+    SAMPLE_SIZE: 5
   },
   RETRY: {
     DELAYS: [1000, 2000, 4000, 8000],
     MAX_ATTEMPTS: 4,
-    JITTER_RANGE: 0.2
+    JITTER_RANGE: 0.2,
+    BACKOFF_BASE: 1000
   },
-  QUEUE: {
-    MAX_SIZE: 100,
-    BATCH_SIZE: 10,
-    TIMEOUT: 5000
-  },
-  TIMEOUTS: {
-    CONNECTION: 5000,
-    MESSAGE: 3000,
-    BATCH: 30000,
-    CLEANUP: 300000
-  },
-  METRICS: {
-    REPORTING_INTERVAL: 300000, // 5 minutes
-    THRESHOLDS: {
-      MESSAGE_PROCESSING: 50,
-      STATE_SYNC: 100,
-      BATCH_PROCESSING: 200
-    },
-    MAX_ENTRIES: 1000
+  INACTIVITY: {
+    PROMPT: 600000, // 10 minutes
+    SUSPEND: 1800000 // 30 minutes
   }
 });
 
-// Add batch config
-export const BATCH_CONFIG = Object.freeze({
-  DEFAULT_SIZE: 10,
-  MAX_SIZE: 100,
-  TIMEOUT: 5000
-});
-
-export const CONFIG_SCHEMAS = Object.freeze({
-  TIMEOUTS: {
-    type: 'object',
-    properties: {
-      CONNECTION: { type: 'number', minimum: 1000, maximum: 30000 },
-      MESSAGE: { type: 'number', minimum: 500, maximum: 10000 },
-      BATCH: { type: 'number', minimum: 5000, maximum: 60000 },
-      CLEANUP: { type: 'number', minimum: 60000, maximum: 3600000 }
-    },
-    required: ['CONNECTION', 'MESSAGE', 'BATCH', 'CLEANUP']
-  },
-  METRICS: {
-    type: 'object',
-    properties: {
-      MAX_STORED_ENTRIES: { type: 'number', minimum: 100, maximum: 10000 },
-      RETENTION_PERIOD_MS: { type: 'number', minimum: 3600000 }, // 1 hour
-      STORAGE_QUOTA_BYTES: { type: 'number', default: 5242880 } // 5MB
-    }
-  },
-  RATE_LIMITS: {
-    API_CALLS: {
-      WINDOW_MS: 60000, // 1 minute
-      MAX_REQUESTS: 100
-    },
-    CONNECTIONS: {
-      WINDOW_MS: 300000, // 5 minutes
-      MAX_CONNECTIONS: 50
-    }
-  }
-});
-
-export const TELEMETRY_CONFIG = Object.freeze({
-  PROVIDERS: {
-    SENTRY: 'sentry',
-    NEW_RELIC: 'newRelic',
-    CUSTOM: 'custom'
-  },
-  LEVELS: {
-    DEBUG: 0,
-    INFO: 1,
-    WARN: 2,
-    ERROR: 3,
-    CRITICAL: 4
-  },
-  BATCH_SIZE: 10,
-  FLUSH_INTERVAL: 30000
-});
-
-export const STORAGE_CONFIG = Object.freeze({
-  QUOTA: {
-    MIN_BYTES: 1048576, // 1MB
-    MAX_BYTES: 10485760, // 10MB
-    DEFAULT_BYTES: 5242880, // 5MB
-    WARN_THRESHOLD: 0.8 // 80% usage warning
-  },
-  SYNC: {
-    MAX_RETRIES: 3,
-    BACKOFF_MS: 1000,
-    MAX_UNSYNCED: 100
-  }
-});
+// Update configuration constants
+export const BATCH_CONFIG = CONFIG.BATCH;
+export const STORAGE_CONFIG = CONFIG.STORAGE;
+export const TELEMETRY_CONFIG = {
+  ...TELEMETRY_CONFIG,
+  THRESHOLDS: CONFIG.THRESHOLDS
+};
 
 // Add tab management constants
 export const TAB_PERMISSIONS = Object.freeze({
@@ -378,7 +330,7 @@ export const selectors = {
       const now = Date.now();
       return tabs.filter(tab => {
         const lastAccessed = activity[tab.id]?.lastAccessed || now;
-        return (now - lastAccessed) > CONFIG.INACTIVITY_THRESHOLDS.PROMPT;
+        return (now - lastAccessed) > CONFIG.INACTIVITY.PROMPT;
       });
     }
   ),
