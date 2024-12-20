@@ -8,6 +8,7 @@
 
 import { createSelector } from 'reselect';
 import * as yup from 'yup';
+import deepEqual from 'fast-deep-equal'; // Changed import source from 'reselect' to 'fast-deep-equal'
 
 // Types (for documentation and tooling only; not exported as values)
 /**
@@ -97,7 +98,9 @@ export const MESSAGE_TYPES = Object.freeze({
   SERVICE_WORKER_UPDATE: 'SERVICE_WORKER_UPDATE',
   TAG_ACTION: 'TAG_ACTION',
   TEST_ACTION: 'TEST_ACTION',       // Ensure TEST_ACTION is defined
-  TEST_MESSAGE: 'TEST_MESSAGE'      // Ensure TEST_MESSAGE is defined
+  TEST_MESSAGE: 'TEST_MESSAGE',      // Ensure TEST_MESSAGE is defined
+  GET_SESSIONS: 'GET_SESSIONS', // Added GET_SESSIONS message type
+  INIT_CHECK: 'INIT_CHECK',  // Add this new message type
 });
 
 export const ERROR_TYPES = Object.freeze({
@@ -334,7 +337,9 @@ export const TAB_OPERATIONS = Object.freeze({
   ARCHIVE: 'archive',
   UPDATE: 'update',
   TAG_AND_CLOSE: 'tagAndClose',
-  GET_OLDEST: 'getOldest'
+  GET_OLDEST: 'getOldestTab',
+  CHECK_LIMIT: 'checkTabLimit',
+  ENFORCE_LIMIT: 'enforceTabLimit'
 });
 
 export const INACTIVITY_THRESHOLDS = {
@@ -376,7 +381,8 @@ export const BOOKMARK_CONFIG = Object.freeze({
 export const TAB_LIMITS = Object.freeze({
   MIN: 1,
   MAX: 1000,
-  DEFAULT: 100
+  DEFAULT: 100,
+  WARNING_THRESHOLD: 0.9 // 90% of max tabs
 });
 
 // Set the TABS.LIMITS in CONFIG now that TAB_LIMITS is defined
@@ -384,30 +390,49 @@ CONFIG.TABS.LIMITS = TAB_LIMITS;
 
 export const createTabSelector = (selector) => selector;
 
+// Define base selectors
+const selectTabManagementState = state => state.tabManagement;
+const selectSessionsState = state => state.sessions;
+const selectSettingsState = state => state.settings;
+
 export const selectors = {
-  selectTabs: (state) => state.tabs,
-  selectArchivedTabs: (state) => state.archivedTabs,
-  selectTabActivity: (state) => state.tabActivity,
-  selectActiveTabs: createSelector(
-    [(state) => state.tabs],
-    (tabs) => tabs.filter(tab => tab.active)
+  // Tab Management
+  selectTabs: state => selectTabManagementState(state).tabs,
+  selectTabById: createSelector(
+    [selectTabManagementState, (_, tabId) => tabId],
+    (tabManagement, tabId) => tabManagement.tabs.find(tab => tab.id === tabId)
   ),
-  selectInactiveTabs: createSelector(
-    [(state) => state.tabActivity, (state) => state.tabs],
-    (activity, tabs) => {
-      const now = Date.now();
-      return tabs.filter(tab => {
-        const lastAccessed = activity[tab.id]?.lastAccessed || now;
-        return (now - lastAccessed) > CONFIG.INACTIVITY.PROMPT;
-      });
-    }
+  selectTabActivity: state => selectTabManagementState(state).activity,
+  selectTabMetadata: state => selectTabManagementState(state).metadata,
+  selectSuspendedTabs: state => selectTabManagementState(state).suspended,
+  selectOldestTab: state => selectTabManagementState(state).oldestTab,
+
+  // Sessions
+  selectSessions: selectSessionsState,
+  selectSessionById: createSelector(
+    [selectSessionsState, (_, id) => id],
+    (sessions, id) => sessions.find(s => s.id === id)
   ),
-  selectMatchingRules: createSelector(
-    [(state) => state.declarativeRules, (_, url) => url],
-    (rules, url) => rules.filter(rule => 
-      new RegExp(rule.condition.urlFilter.replace(/\*/g, '.*')).test(url)
-    )
-  )
+
+  // Settings
+  selectSettings: selectSettingsState,
+  selectMaxTabs: createSelector(
+    [selectSettingsState],
+    settings => settings.maxTabs
+  ),
+
+  // Other
+  selectPermissions: state => state.permissions,
+  selectArchivedTabs: state => state.archivedTabs,
+};
+
+export { createSelector } from 'reselect'; // Example of re-exporting if needed
+
+// Define and export coreSelectors
+export const coreSelectors = {
+  someSelector: (state) => state.someProperty,
+  anotherSelector: (state) => state.anotherProperty,
+  // ...other selectors...
 };
 
 // No longer export Tab, Session, Rule, DeclarativeRule, TabActivity, AppState as values.
@@ -618,35 +643,17 @@ export const VALIDATION_SCHEMAS = {
     active: yup.boolean()
   }),
 
-  message: yup.object({
+  message: yup.object().shape({
     type: yup.string()
       .required()
       .oneOf(Object.values(MESSAGE_TYPES)),
-    payload: yup.mixed()
-      .when('type', {
-        is: MESSAGE_TYPES.UPDATE_TAB_ACTIVITY,
-        then: yup.object({
-          timestamp: yup.number(),
-          tabId: yup.number().optional()
-        })
-      }),
-  }).noUnknown(true).strict(),
-
-  state: yup.object({
-    tabs: yup.array().of(yup.lazy(() => VALIDATION_SCHEMAS.tab))
-  }),
-
-  config: yup.object({
-    timeout: yup.number()
-      .min(CONFIG_RANGES.TIMEOUTS.min)
-      .max(CONFIG_RANGES.TIMEOUTS.max),
-    threshold: yup.number()
-      .min(CONFIG_RANGES.THRESHOLDS.min)
-      .max(CONFIG_RANGES.THRESHOLDS.max),
-    batchSize: yup.number()
-      .min(CONFIG_RANGES.BATCH.size.min)
-      .max(CONFIG_RANGES.BATCH.size.max)
-  })
+    payload: yup.mixed().required(), // Allow empty object
+    action: yup.string().when('type', {
+      is: (type) => [MESSAGE_TYPES.TAB_ACTION, MESSAGE_TYPES.SESSION_ACTION].includes(type),
+      then: yup.string().required(),
+      otherwise: yup.string().optional()
+    })
+  }).noUnknown(true),
 };
 
 VALIDATION_SCHEMAS.message = yup.object().shape({
@@ -660,7 +667,14 @@ VALIDATION_SCHEMAS.message = yup.object().shape({
     MESSAGE_TYPES.SESSION_ACTION,
     MESSAGE_TYPES.SERVICE_WORKER_UPDATE,
     MESSAGE_TYPES.TAG_ACTION,
-    MESSAGE_TYPES.TEST_MESSAGE // Added TEST_MESSAGE
+    MESSAGE_TYPES.TEST_MESSAGE, // Added TEST_MESSAGE
+    MESSAGE_TYPES.GET_SESSIONS, // Added GET_SESSIONS
+    MESSAGE_TYPES.INIT_CHECK // Added INIT_CHECK
   ]).required(),
   payload: yup.mixed().required(),
 });
+
+export {
+  // ...other exports...
+  deepEqual,
+};

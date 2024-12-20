@@ -3,9 +3,19 @@ import { connection } from '../../../utils/connectionManager';
 import { logger } from '../../../utils/logger';
 import { 
   MESSAGE_TYPES, 
-  ERROR_CATEGORIES, // Add ERROR_CATEGORIES import
+  ERROR_CATEGORIES,
   CONFIG 
 } from '../../../utils/constants';
+
+// Mock stateManager
+jest.mock('../../../utils/stateManager', () => ({
+  stateManager: {
+    updateState: jest.fn(),
+    getState: jest.fn(),
+    subscribe: jest.fn(),
+    unsubscribe: jest.fn()
+  }
+}));
 
 // Mock logger
 jest.mock('../../../utils/logger', () => ({

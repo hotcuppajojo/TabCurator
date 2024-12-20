@@ -1,97 +1,102 @@
 // background/background.js
 import browser from 'webextension-polyfill';
+import stateManager from '../utils/stateManager.js'; // Ensure default import
 import { connection } from '../utils/connectionManager.js';
-import { initializeServiceWorkerState } from '../utils/stateManager.js';
-import { TabManager } from '../utils/tabManager.js'; 
-import { logger } from '../utils/logger.js';
-import { CONFIG, MESSAGE_TYPES } from '../utils/constants.js';
+import { tabManager } from '../utils/tabManager.js';
+import { CONFIG, MESSAGE_TYPES, SERVICE_TYPES } from '../utils/constants.js';
+import { logger } from '../utils/logger.js'; // Add logger import
 
-const tabManager = new TabManager();
-
-async function setupCoordination() {
-  try {
-    if (!browser?.runtime) {
-      throw new Error('Browser APIs not available');
-    }
-
-    // Initialize core services
-    await Promise.all([
-      connection.initialize(),
-      initializeServiceWorkerState(),
-      tabManager.initialize()
-    ]);
-
-    // Set up message handling
-    browser.runtime.onMessage.addListener((message, sender) => {
-      return connection.handleMessage(message, sender);
-    });
-
-    // Handle port connections
-    browser.runtime.onConnect.addListener(port => {
-      if (!port) return;
-      
-      const connId = connection.handlePort(port);
-      
-      port.onMessage.addListener(async (message) => {
-        try {
-          if (message.type === MESSAGE_TYPES.TAB_ACTION) {
-            const response = await tabManager[message.action]?.(message.payload);
-            if (response) port.postMessage(response);
-          } else {
-            const response = await connection.handleMessage(message, port);
-            if (response) port.postMessage(response);
-          }
-        } catch (error) {
-          logger.error('Message handling error:', error);
-          port.postMessage({ 
-            type: MESSAGE_TYPES.ERROR,
-            error: error.message 
-          });
-        }
+// Polyfill requestIdleCallback if it doesn't exist
+if (typeof requestIdleCallback === 'undefined') {
+  globalThis.requestIdleCallback = (callback, options) => {
+    const start = Date.now();
+    return setTimeout(() => {
+      callback({
+        didTimeout: false,
+        timeRemaining: () => Math.max(0, 50 - (Date.now() - start))
       });
-
-      port.onDisconnect.addListener(() => {
-        connection.handleDisconnect(connId);
-      });
-    });
-
-    // Tab events
-    browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-      tabManager.handleTabUpdate(tabId, changeInfo, tab);
-    });
-    
-    browser.tabs.onRemoved.addListener((tabId) => {
-      tabManager.handleTabRemove(tabId);
-    });
-
-    // Periodic tasks
-    setInterval(() => {
-      requestIdleCallback(async () => {
-        try {
-          await Promise.all([
-            tabManager.cleanupInactiveTabs(),
-            tabManager.enforceTabLimits(),
-            connection.cleanupConnections()
-          ]);
-        } catch (error) {
-          logger.error('Periodic task failed', { error: error.message });
-        }
-      }, { timeout: 10000 });
-    }, CONFIG.TIMEOUTS.CLEANUP);
-
-    logger.info('Background coordination initialized');
-  } catch (error) {
-    logger.critical('Background coordination setup failed', { error: error.message });
-    throw error;
-  }
+    }, (options && options.timeout) || 1);
+  };
 }
 
-// Just call setupCoordination immediately; MV3 background is a service worker by default.
-setupCoordination().catch(error => {
-  logger.critical('Fatal background error', { error: error.message });
+// Expose logger to Chrome's console
+globalThis.tabCuratorLogger = logger;
+globalThis.tabManager = tabManager;
+globalThis.store = stateManager.store;
+
+console.info('TabCurator debug objects available:');
+console.info('- tabCuratorLogger: Logger interface');
+console.info('- tabManager: Tab management interface');
+console.info('- store: Redux store');
+
+let initialized = false;
+
+const background = {
+  async initBackground() {
+    if (initialized) return true;
+    
+    try {
+      // 1. Initialize state manager first
+      await stateManager.initialize();
+      logger.info('StateManager initialized', stateManager);
+
+      // 2. Initialize tab manager with stateManager reference  
+      await tabManager.initialize(stateManager);
+      logger.info('TabManager initialized', tabManager);
+
+      // 3. Initialize connection manager last
+      await connection.initialize(stateManager);
+      logger.info('Connection manager initialized', connection);
+
+      // 4. Mark initialization complete
+      initialized = true;
+
+      return true;
+    } catch (error) {
+      logger.error('Background initialization failed:', error);
+      throw error;
+    }
+  },
+
+  isInitialized() {
+    return initialized;
+  },
+
+  setupMessageHandling() {
+    browser.runtime.onConnect.addListener((port) => {
+      if (!initialized) {
+        port.postMessage({ error: 'Service not initialized' });
+        return;
+      }
+      connection.handlePort(port);
+    });
+
+    browser.runtime.onMessage.addListener(async (message, sender) => {
+      try {
+        // Always allow init check
+        if (message.type === MESSAGE_TYPES.INIT_CHECK) {
+          return { initialized };
+        }
+
+        if (!initialized) {
+          return { error: 'Service not initialized' };
+        }
+
+        const response = await connection.handleMessage(message, sender);
+        return response; // Ensure the response is returned
+      } catch (error) {
+        logger.error('Handle Message Error:', { error: error.message });
+        return { error: error.message };
+      }
+    });
+  }
+};
+
+// Initialize background and setup message handling
+background.initBackground().then(() => {
+  background.setupMessageHandling();
+}).catch(error => {
+  logger.error('Failed to initialize background:', error);
 });
 
-export const __testing__ = {
-  setupCoordination,
-  tabManager
-};
+export { background };

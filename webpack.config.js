@@ -38,7 +38,7 @@ export default (env) => {
 
     experiments: {
       outputModule: true,
-      topLevelAwait: true,
+      // topLevelAwait: true,
     },
 
     module: {
@@ -107,8 +107,8 @@ export default (env) => {
     },
 
     optimization: {
-      moduleIds: 'deterministic',
-      chunkIds: 'deterministic',
+      //moduleIds: 'deterministic',
+      //chunkIds: 'deterministic',
     },
   };
 };

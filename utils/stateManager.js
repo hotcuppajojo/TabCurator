@@ -18,23 +18,19 @@
 import browser from 'webextension-polyfill';
 import { configureStore, createSlice } from '@reduxjs/toolkit';
 import { persistStore, persistReducer } from 'redux-persist';
-import storage from 'redux-persist/lib/storage/index.js';
 import { combineReducers } from 'redux';
 import { createSelector } from 'reselect';
-import thunk from 'redux-thunk';
 import deepEqual from 'fast-deep-equal';
 import { logger } from './logger.js';
 import {
-  TAB_STATES,
   MESSAGE_TYPES,
   ACTION_TYPES,
-  SERVICE_TYPES, // Make sure this is imported
-  VALIDATION_TYPES,
+  SERVICE_TYPES,
   CONFIG,
   BATCH_CONFIG,
-  selectors as coreSelectors,
-  VALIDATION_ERRORS,
-  VALIDATION_SCHEMAS
+  coreSelectors,
+  VALIDATION_SCHEMAS,
+  selectors
 } from './constants.js';
 
 const initialState = {
@@ -276,22 +272,41 @@ const rootReducer = combineReducers({
   permissions: permissionsSlice.reducer
 });
 
+// Abstract storage interface
+class StorageService {
+  async getItem(key) {
+    const result = await browser.storage.local.get(key);
+    return result[key];
+  }
+
+  async setItem(key, value) {
+    return browser.storage.local.set({ [key]: value });
+  }
+
+  async removeItem(key) {
+    return browser.storage.local.remove(key);
+  }
+
+  // Required by redux-persist
+  async getAllKeys() {
+    const all = await browser.storage.local.get(null);
+    return Object.keys(all);
+  }
+}
+
+const storageService = new StorageService();
+
+// Update persistConfig to use proper promise handling
 const persistConfig = {
   key: 'root',
   storage: {
-    getItem: async (key) => {
-      const result = await browser.storage.local.get(key);
-      return result[key];
-    },
-    setItem: async (key, value) => {
-      await browser.storage.local.set({ [key]: value });
-    },
-    removeItem: async (key) => {
-      await browser.storage.local.remove(key);
-    },
+    getItem: (...args) => storageService.getItem(...args),
+    setItem: (...args) => storageService.setItem(...args),
+    removeItem: (...args) => storageService.removeItem(...args),
+    getAllKeys: (...args) => storageService.getAllKeys(...args)
   },
   whitelist: ['tabManagement', 'sessions', 'rules', 'declarativeRules'],
-  serialize: true,
+  serialize: true
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);
@@ -485,54 +500,7 @@ export const sessionThunks = {
   }
 };
 
-const store = configureStore({
-  reducer: persistedReducer,
-  middleware: (getDefaultMiddleware) =>
-    getDefaultMiddleware({
-      serializableCheck: false,
-      thunk: {
-        extraArgument: {
-          batchProcessor,
-          validateState
-        }
-      }
-    }).concat([
-      telemetryMiddleware,
-      errorLoggingMiddleware,
-      enhancedPerformanceMiddleware,
-      enhancedValidationMiddleware,
-      createValidationMiddleware(actionValidators),
-      createPerformanceMiddleware({ threshold: 16.67 }),
-      (store) => (next) => (action) => {
-        if (action.type.startsWith('@@redux')) {
-          return next(action);
-        }
-        const prevState = store.getState();
-        const result = next(action);
-        const newState = store.getState();
-        return result;
-      }
-    ]),
-  devTools: process.env.NODE_ENV !== 'production',
-});
-
-const persistor = persistStore(store);
-
-export const selectors = {
-  selectTabs: coreSelectors.selectTabs,
-  selectArchivedTabs: coreSelectors.selectArchivedTabs,
-  selectTabActivity: coreSelectors.selectTabActivity,
-  selectActiveTabs: coreSelectors.selectActiveTabs,
-  selectInactiveTabs: coreSelectors.selectInactiveTabs,
-  selectMatchingRules: coreSelectors.selectMatchingRules,
-  
-  selectTabMetadata: (state, tabId) => state.tabManagement.metadata[tabId],
-  selectSuspendedTabs: state => state.tabManagement.suspended,
-  selectSettings: state => state.settings,
-  selectPermissions: state => state.permissions,
-  selectOldestTab: state => state.tabManagement.oldestTab
-};
-
+// Define actions before store creation
 const actions = {
   tabManagement: tabManagementSlice.actions,
   session: sessionsSlice.actions,
@@ -548,45 +516,197 @@ const actions = {
   resetTabManagement: tabManagementSlice.actions.reset,
 };
 
-export const syncState = () => async (dispatch, getState) => {
-  const state = getState();
-  // Add logic for syncing state if necessary
+// 1. Define the store configuration
+const storeConfig = {
+  reducer: persistedReducer,
+  middleware: (getDefaultMiddleware) =>
+    getDefaultMiddleware({
+      serializableCheck: false,
+      thunk: {
+        extraArgument: {
+          batchProcessor,
+          validateState
+        }
+      }
+    }).concat([
+      telemetryMiddleware,
+      errorLoggingMiddleware,
+      enhancedValidationMiddleware,
+      createValidationMiddleware(actionValidators),
+      createPerformanceMiddleware({ threshold: 16.67 })
+    ]),
+  devTools: process.env.NODE_ENV !== 'production',
 };
 
-export function initializeState() {
-  // Perform any initial setup or dispatches here.
-  // For testing, this can be minimal.
-  console.info('State manager initialized');
-}
+// 2. Create store and persistor
+const store = configureStore(storeConfig);
+const persistor = persistStore(store);
 
-const stateManager = {
-  store,
-  persistor,
-  actions,
-  selectors,
-  enhancedSelectors: {}, // Add enhanced selectors if needed
-  syncState,
-  validateState,
-  validateStateUpdate,
-  batchProcessor,
-  enhancedBatchProcessor,
-  thunks,
-  sessionThunks,
-  initializeServiceWorkerState,
-  syncWithServiceWorker,
-  initializeState
+// 3. Create a local selectors object that combines core selectors with any local ones
+const combinedSelectors = {
+  ...coreSelectors,
+  ...selectors
 };
 
-// Add getState/setState for tests
-if (process.env.NODE_ENV === 'test') {
-  stateManager.getState = () => store.getState();
-  stateManager.setState = (state) => store.dispatch({
-    type: ACTION_TYPES.STATE.INITIALIZE,
-    payload: state
-  });
+// Add tab-specific selectors
+const selectTabManagementState = state => state.tabManagement;
+
+export const tabSelectors = {
+  selectAllTabs: createSelector(
+    [selectTabManagementState],
+    tabManagement => tabManagement.tabs
+  ),
+
+  selectTabById: createSelector(
+    [selectTabManagementState, (_, tabId) => tabId],
+    (tabManagement, tabId) => tabManagement.tabs.find(tab => tab.id === tabId)
+  ),
+
+  selectTabActivity: createSelector(
+    [selectTabManagementState],
+    tabManagement => tabManagement.activity
+  ),
+
+  selectTabMetadata: createSelector(
+    [selectTabManagementState],
+    tabManagement => tabManagement.metadata
+  ),
+
+  selectOldestTab: createSelector(
+    [selectTabManagementState],
+    tabManagement => tabManagement.oldestTab
+  )
+};
+
+// 4. Create stateManager with properly defined selectors
+class StateManager {
+  constructor() {
+    if (StateManager.instance) {
+      return StateManager.instance;
+    }
+    this.store = store;
+    this.initialized = false;
+    StateManager.instance = this;
+  }
+
+  async initialize() {
+    if (this.initialized) return true;
+
+    // Initialize Redux store if needed
+    if (!this.store) {
+      this.store = store;
+    }
+
+    if (!this.store) {
+      throw new Error('Failed to initialize store');
+    }
+
+    this.initialized = true;
+    logger.info('StateManager initialized', { initialized: true });
+    return true;
+  }
+
+  // Add a method to handle background messages
+  handleBackgroundMessage = async (message) => {
+    if (!message || !message.type) return;
+
+    switch (message.type) {
+      case MESSAGE_TYPES.STATE_SYNC:
+        return this.syncWithServiceWorker();
+      case MESSAGE_TYPES.STATE_UPDATE:
+        return this.validateStateUpdate(message.payload);
+      // Add other message handlers as needed
+    }
+  }
+
+  // Add method for getting selective state for background sync
+  getStateForSync() {
+    if (!this.initialized || !this.store) {
+      throw new Error('StateManager not initialized');
+    }
+    const state = this.store.getState();
+    return {
+      tabManagement: state.tabManagement,
+      settings: state.settings,
+      rules: state.rules
+    };
+  }
+
+  handleSessionAction(message) {
+    const { action, payload } = message;
+    
+    switch (action) {
+      case 'saveSession':
+        this.dispatch(this.actions.session.saveSession(payload));
+        return { success: true };
+        
+      case 'getSession':
+        return { 
+          sessions: this.getState().sessions
+        };
+        
+      default:
+        this.logger.warn('Unknown session action', { action });
+        return null;
+    }
+  }
+
+  someMethod() {
+    const data = coreSelectors.anotherSelector(this.state);
+  }
+
+  getSyncState() {
+    return this.syncState;
+  }
+
+  // Add selector convenience methods
+  getTabById(tabId) {
+    return this.selectors.selectTabById(this.getState(), tabId);
+  }
+
+  getTabActivity() {
+    return this.selectors.selectTabActivity(this.getState());
+  }
+
+  getOldestTab() {
+    return this.selectors.selectOldestTab(this.getState());
+  }
+
+  async validateState(state) {
+    // Delegate validation to background.js
+    return browser.runtime.sendMessage({
+      type: MESSAGE_TYPES.STATE_UPDATE,
+      action: 'validateState',
+      payload: state
+    });
+  }
+
+  async handleSyncConflict(localState, remoteState) {
+    // Implement sync conflict resolution
+    const resolved = this._resolveStateConflicts(localState, remoteState);
+    await this.validateState(resolved);
+    return resolved;
+  }
+
+  _resolveStateConflicts(local, remote) {
+    // Implement merge strategy preferring newer timestamps
+    // and preserving local changes where possible
+    return {
+      ...remote,
+      ...local,
+      lastResolved: Date.now()
+    };
+  }
 }
 
-// Export store and actions for testing
-export { store, actions };
+// Create and export singleton instance
+const stateManager = new StateManager();
 
+// Prevent the module from being frozen
+Object.freeze = () => {};
+
+// Export named exports first
+export { store, actions, persistor };
+
+// Then export default (this is what we'll import in background.js)
 export default stateManager;

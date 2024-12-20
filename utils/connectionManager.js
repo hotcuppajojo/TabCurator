@@ -31,6 +31,7 @@ import {
 } from './tabManager.js';
 import deepEqual from 'fast-deep-equal';
 import { logger } from './logger.js';
+import stateManager from './stateManager.js'; // Ensure default import
 
 // Add performance monitoring configuration
 const PERFORMANCE_THRESHOLDS = {
@@ -56,12 +57,9 @@ if (!CONFIG.METRICS) {
   };
 }
 
-function getStateManager() {
-  return require('./stateManager.js').default;
-}
-
 class ConnectionManager {
   constructor() {
+    this.initialized = false;
     this.connections = new Map();
     this.nextConnectionId = 1;
     this.messageQueue = [];
@@ -133,18 +131,24 @@ class ConnectionManager {
       backgroundInitialized: false,
       reconnectTimeout: null
     };
+
+    this.stateManager = stateManager; // Use singleton instance
+    this.logger = null;
   }
 
   async connect(options = {}) {
-    if (!this.connectionState.isReady) {
-      await this.initialize();
-    }
-
-    const connectionId = crypto.randomUUID();
-    const startTime = performance.now();
-
     try {
-      const port = browser.runtime.connect(undefined, { 
+      // First check if background is initialized
+      const response = await browser.runtime.sendMessage({
+        type: MESSAGE_TYPES.INIT_CHECK
+      });
+
+      if (!response?.initialized) {
+        throw new Error('Background service not initialized');
+      }
+
+      const connectionId = crypto.randomUUID();
+      const port = browser.runtime.connect(undefined, {
         name: options.name || 'tabActivity'
       });
 
@@ -161,14 +165,10 @@ class ConnectionManager {
 
       this.connections.set(connectionId, port);
 
-      return connectionId; // Return the connectionId, not the port
+      return connectionId;
     } catch (error) {
       this.connectionMetrics.failed++;
-      logger.error('Connection failed', {
-        connectionId,
-        error: error.message,
-        duration: performance.now() - startTime
-      });
+      logger.error('Connection failed', { error: error.message });
       throw error;
     }
   }
@@ -511,41 +511,24 @@ class ConnectionManager {
 
   _messageHandlers = {
     [MESSAGE_TYPES.STATE_SYNC]: async (payload) => {
-      return this._measurePerformance(
-        async () => this.syncState(),
-        'STATE_SYNC'
-      );
+      await this.syncState();
+      return { success: true };
     },
-
     [MESSAGE_TYPES.TAB_ACTION]: async (payload) => {
-      return this._measurePerformance(
-        async () => this._handleTabAction(payload),
-        'TAB_ACTION'
-      );
+      const response = await this._handleTabAction(payload);
+      return response;
     },
-
     [MESSAGE_TYPES.TAG_ACTION]: async (payload) => {
-      return this._measurePerformance(
-        async () => this._handleTagAction(payload),
-        'TAG_ACTION'
-      );
+      const response = await this._handleTagAction(payload);
+      return response;
     },
-
-    [MESSAGE_TYPES.UPDATE_TAB_ACTIVITY]: async (payload) => {
-      return this._measurePerformance(
-        async () => {
-          const { tabId, timestamp } = payload;
-          await this._handleTabActivity(tabId, timestamp);
-        },
-        'TAB_ACTIVITY_UPDATE'
-      );
+    [MESSAGE_TYPES.SESSION_ACTION]: async (payload) => {
+      const response = await this.stateManager.handleSessionAction(payload);
+      return response;
     },
-
-    [MESSAGE_TYPES.TEST_MESSAGE]: async (payload) => {
-      return { success: true, data: payload };
-    },
-    [MESSAGE_TYPES.TEST_ACTION]: async (payload) => {
-      return { success: true, data: payload };
+    [MESSAGE_TYPES.GET_SESSIONS]: async () => {
+      const state = this.stateManager.getState();
+      return { sessions: state.sessions || [] };
     }
   };
 
@@ -560,23 +543,34 @@ class ConnectionManager {
     
     const handler = this._messageHandlers[message.type];
     if (!handler) {
-      throw new Error(`Unhandled message type: ${message.type}`);
+      // Return a standardized error response for unhandled message types
+      return { error: `Unhandled message type: ${message.type}` };
     }
 
-    // Execute handler first to get result
-    const result = await this._measurePerformance(
-      () => handler(message.payload, senderPort),
-      'MESSAGE_PROCESSING'
-    );
+    try {
+      // Execute handler to get result
+      const result = await this._measurePerformance(
+        () => handler(message.payload, senderPort),
+        'MESSAGE_PROCESSING'
+      );
 
-    // Then invoke any registered callbacks
-    const connectionId = this._findConnectionIdByPort(senderPort);
-    const callback = this.messageCallbacks.get(connectionId);
-    if (callback) {
-      callback(message);
+      // Ensure the handler returns a response object
+      if (typeof result !== 'object' || result === null) {
+        return { error: 'Handler did not return a valid response object' };
+      }
+
+      // Then invoke any registered callbacks
+      const connectionId = this._findConnectionIdByPort(senderPort);
+      const callback = this.messageCallbacks.get(connectionId);
+      if (callback) {
+        callback(message);
+      }
+
+      return result;
+    } catch (error) {
+      // Return error in a standardized response object
+      return { error: error.message || 'An unknown error occurred' };
     }
-
-    return result;
   }
 
   _findConnectionIdByPort(port) {
@@ -594,11 +588,11 @@ class ConnectionManager {
       backoff: STORAGE_CONFIG.SYNC.BACKOFF_MS
     };
     let stateUpdates;
-
+    
     try {
       await this._trackPerformance(
         async () => {
-          const currentState = getStateManager().getState();
+          const currentState = this.stateManager.store.getState();
           stateUpdates = this._getStateDiff(currentState);
           
           if (Object.keys(stateUpdates).length > 0) {
@@ -1150,64 +1144,74 @@ class ConnectionManager {
   }
 
   async _handleTabAction(payload) {
-    if (!payload || !payload.action || !payload.tabId) return;
+    if (!payload || !payload.action || !payload.tabId) {
+      return { error: 'Invalid payload for TAB_ACTION' };
+    }
 
     const { action, tabId } = payload;
     switch (action) {
       case TAB_OPERATIONS.DISCARD:
         await discardTab(tabId);
-        break;
+        return { success: true };
       case TAB_OPERATIONS.UPDATE:
         if (payload.updates) {
           await updateTab(tabId, payload.updates);
+          return { success: true };
         }
-        break;
+        return { error: 'No updates provided' };
       case TAB_OPERATIONS.ARCHIVE:
         await updateTab(tabId, { state: TAB_STATES.ARCHIVED });
-        break;
+        return { success: true };
       case TAB_OPERATIONS.TAG_AND_CLOSE:
         if (payload.tag) {
           const tab = await getTab(tabId);
           const updatedTags = [...(tab.tags || []), payload.tag];
           await updateTab(tabId, { tags: updatedTags, state: TAB_STATES.ARCHIVED });
           await browser.tabs.remove(tabId);
+          return { success: true };
         }
-        break;
+        return { error: 'No tag provided' };
       case TAB_OPERATIONS.GET_OLDEST:
-        const state = getStateManager().getState();
-        return state.tabManagement?.oldestTab || null;
+        const state = this.stateManager.getState();
+        return { tab: state.tabManagement?.oldestTab || null };
       default:
-        // No-op
-        break;
+        return { error: `Unhandled TAB_ACTION: ${action}` };
     }
   }
 
   async _handleTagAction(payload) {
-    if (!payload || !payload.operation || !payload.tabId || !payload.tag) return;
+    if (!payload || !payload.operation || !payload.tabId || !payload.tag) {
+      return { error: 'Invalid payload for TAG_ACTION' };
+    }
 
     const { operation, tabId, tag } = payload;
     const tab = await getTab(tabId);
+    if (!tab) {
+      return { error: `Tab with ID ${tabId} not found` };
+    }
+
     const currentTags = tab.tags || [];
 
     switch (operation) {
       case TAG_OPERATIONS.ADD:
         if (!currentTags.includes(tag)) {
           await updateTab(tabId, { tags: [...currentTags, tag] });
+          return { success: true };
         }
-        break;
+        return { error: 'Tag already exists' };
       case TAG_OPERATIONS.REMOVE:
         await updateTab(tabId, { tags: currentTags.filter(t => t !== tag) });
-        break;
+        return { success: true };
       case TAG_OPERATIONS.UPDATE:
         if (currentTags.length > 0) {
           await updateTab(tabId, { tags: [tag, ...currentTags.slice(1)] });
+          return { success: true };
         } else {
           await updateTab(tabId, { tags: [tag] });
+          return { success: true };
         }
-        break;
       default:
-        // No-op
-        break;
+        return { error: `Unhandled TAG_ACTION: ${operation}` };
     }
   }
 
@@ -1220,13 +1224,15 @@ class ConnectionManager {
     }
     
     if (tabId) {
-      await getStateManager().dispatch(
+      await this.stateManager.dispatch(
         actions.tabManagement.updateTab({
           id: tabId,
           lastAccessed: timestamp || Date.now()
         })
       );
+      return { success: true };
     }
+    return { error: 'No active tab found' };
   }
 
   async _handleSafariRegistration(registration) {
@@ -1251,6 +1257,16 @@ class ConnectionManager {
       this.handleDisconnect(connId);
     });
 
+    port.onMessage.addListener(async (message) => {
+      try {
+        const response = await this.handleMessage(message, port);
+        port.postMessage(response);
+      } catch (error) {
+        logger.error('Handle Message Error:', { error: error.message });
+        port.postMessage({ error: error.message });
+      }
+    });
+
     return connId;
   }
 
@@ -1260,15 +1276,8 @@ class ConnectionManager {
    */
   handleDisconnect(connId) {
     this.connections.delete(connId);
-    // ...existing code...
-  }
-
-  handleMessage(msg, port) {
-    const connectionId = this._findConnectionIdByPort(port);
-    const callback = this.messageCallbacks.get(connectionId);
-    if (callback) {
-      callback(msg);
-    }
+    logger.info('Connection disconnected', { connectionId: connId });
+    this.messageCallbacks.delete(connId);
   }
 
   /**
@@ -1282,45 +1291,155 @@ class ConnectionManager {
     return this._handleDisconnect(connectionId);
   }
 
-  async initialize() {
-    try {
-      if (!browser?.runtime) {
-        throw new Error('Runtime API not available');
-      }
-      this.connectionState.isReady = true;
-      this.connectionState.backgroundInitialized = true;
-      
-      logger.info('Connection manager initialized');
-      return true;
-    } catch (error) {
-      this.connectionState.isReady = false;
-      logger.error('Connection manager initialization failed:', { error: error.message });
-      throw error;
+  async initialize(stateManagerInstance) {
+    if (this.initialized) return true;
+
+    if (!stateManagerInstance?.store || !stateManagerInstance.initialized) {
+      throw new Error('Valid initialized StateManager instance required');
     }
+
+    this.stateManager = stateManagerInstance;
+    this.connectionState.isReady = true;
+    this.connectionState.backgroundInitialized = true;
+    
+    // Store instance reference for access by message handlers
+    this.initialized = true;
+    logger.info('Connection manager initialized', { initialized: true });
+    
+    return true;
+  }
+
+  async handleMessage(message, sender, stateManagerInstance = this.stateManager) {
+    if (!this.initialized || !stateManagerInstance?.initialized) {
+      return { error: 'ConnectionManager or StateManager not initialized' };
+    }
+
+    if (!this.stateManager) {
+      throw new Error('StateManager not initialized');
+    }
+
+    switch (message.type) {
+      case MESSAGE_TYPES.GET_SESSIONS:
+        try {
+          const state = this.stateManager.getState();
+          const sessions = state.sessions || [];
+          return { sessions };
+        } catch (error) {
+          return { error: error.message };
+        }
+
+      case MESSAGE_TYPES.SESSION_ACTION:
+        try {
+          const result = await this.stateManager.handleSessionAction(message.payload);
+          return result;
+        } catch (error) {
+          return { error: error.message };
+        }
+
+      default:
+        return { error: `Unhandled message type: ${message.type}` };
+    }
+  }
+
+  handlePortConnection(port) {
+    if (!port) return;
+
+    connection.handlePort(port); // Assuming `connection` is part of this class or imported
+
+    port.onMessage.addListener(async (message) => {
+      try {
+        if (message.type === this.messageTypes.SESSION_ACTION) {
+          this.stateManager.logger.debug(`Handling SESSION_ACTION: ${message.action}`, { payload: message.payload });
+          const response = await this.stateManager.tabManager[message.action]?.(message.payload);
+          this.stateManager.logger.debug('Response from TabManager:', { response });
+          port.postMessage({
+            type: message.type,
+            action: message.action,
+            payload: {
+              sessions: response
+            }
+          });
+        } else {
+          const response = await this.stateManager.tabManager[message.action]?.(message.payload);
+          if (response) {
+            port.postMessage({
+              type: message.type,
+              action: message.action,
+              payload: response
+            });
+          }
+        }
+      } catch (error) {
+        this.stateManager.logger.error('Message handling error:', error);
+        port.postMessage({ 
+          type: this.messageTypes.ERROR,
+          error: error.message 
+        });
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      connection.handleDisconnect(connId); // Ensure `connection` and `connId` are properly managed
+    });
+  }
+
+  handleTabUpdate(tabId, changeInfo, tab) {
+    this.stateManager.tabManager.handleTabUpdate(tabId, changeInfo, tab);
+  }
+
+  handleTabRemove(tabId, removeInfo) {
+    this.stateManager.tabManager.handleTabRemove(tabId, removeInfo);
+  }
+
+  async performPeriodicTasks() {
+    await Promise.all([
+      this.stateManager.tabManager.cleanupInactiveTabs(),
+      this.stateManager.tabManager.enforceTabLimits(),
+      this.cleanupConnections()
+    ]);
+  }
+
+  async cleanupConnections() {
+    await connection.cleanupConnections(); // Ensure `connection` is properly referenced
   }
 }
 
 // Create and export singleton instance
 export const connection = new ConnectionManager();
 
-// Export utility functions that use the singleton
+// Export additional utilities as needed
 export async function sendMessage(message) {
-  return connection.sendMessage(undefined, message);
+  return connection.sendMessage(message);
 }
 
 export async function initializeConnection(messageHandler) {
-  await connection.connect();
-  if (messageHandler) {
-    connection.setMessageHandler(messageHandler);
-  }
+  return connection.initializeConnection(messageHandler);
 }
 
-export const {
-  createAlarm,
-  onAlarm,
-  registerServiceWorker,
-  processBatchMessages
-} = connection;
+export async function createAlarm(name, alarmInfo) {
+  if (!browser.alarms) {
+    throw new Error('Alarms API not available');
+  }
+  await browser.alarms.create(name, alarmInfo);
+}
+
+export async function onAlarm(callback) {
+  if (!browser.alarms) {
+    throw new Error('Alarms API not available');
+  }
+  browser.alarms.onAlarm.addListener(callback);
+}
+
+export async function processBatchMessages(messages, { 
+  batchSize = CONFIG.BATCH.DEFAULT_SIZE,
+  onProgress
+} = {}) {
+  return connection.processBatchMessages(messages, { batchSize, onProgress });
+}
+
+export async function registerServiceWorker(scriptURL, options = {}) {
+  return connection.registerServiceWorker(scriptURL, options);
+}
 
 if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', () => {

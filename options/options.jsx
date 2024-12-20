@@ -6,6 +6,7 @@ import './options.css';
 
 import { store, actions } from '../utils/stateManager'; // If Redux integration is still needed
 import { CONFIG, TAB_LIMITS } from '../utils/constants'; // For limits and defaults
+import { Provider } from 'react-redux';
 
 export default function Options() {
   const [inactiveThreshold, setInactiveThreshold] = useState(60);
@@ -167,4 +168,9 @@ export default function Options() {
   );
 }
 
-ReactDOM.render(<Options />, document.getElementById('root'));
+ReactDOM.render(
+  <Provider store={store}>
+    <Options />
+  </Provider>,
+  document.getElementById('root')
+);

@@ -568,6 +568,27 @@ class Logger {
       performance: this.getPerformanceMetrics()
     };
   }
+
+  info(message, meta) {
+    console.info(message, meta);
+  }
+
+  error(message, meta) {
+    console.error(message, meta);
+  }
+
+  warn(message, meta) {
+    console.warn(message, meta);
+  }
+
+  debug(message, meta) {
+    console.debug(message, meta);
+  }
+
+  logPerformance(type, duration, meta) {
+    console.log(`[Performance] ${type}: ${duration}ms`, meta);
+  }
 }
 
-export const logger = new Logger();
+const logger = new Logger();
+export { logger };

@@ -3,7 +3,6 @@
  */
 
 import browser from 'webextension-polyfill';
-import stateManager from './stateManager.js';
 import { logger } from './logger.js';
 import {
   TAB_STATES,
@@ -13,6 +12,7 @@ import {
   MESSAGE_TYPES 
 } from './constants.js';
 
+let stateManager; // Will be initialized later
 
 // Operations defined for tabs
 export const TAB_OPERATIONS = Object.freeze({
@@ -152,11 +152,15 @@ export async function createTab(createProperties) {
 export async function updateTab(tabId, updateProperties) {
   try {
     const updatedTab = await browser.tabs.update(tabId, updateProperties);
-    // Update last accessed time when tab is updated
-    stateManager.dispatch(stateManager.actions.tabManagement.updateTab({ id: tabId, lastAccessed: Date.now() }));
+    // Use stateManager singleton for state updates
+    stateManager.dispatch(stateManager.actions.tabManagement.updateTab({ 
+      id: tabId,
+      ...updateProperties,
+      lastAccessed: Date.now()
+    }));
     return updatedTab;
   } catch (err) {
-    console.error(`Error updating tab ${tabId}:`, err);
+    logger.error(`Error updating tab ${tabId}:`, err);
     throw err;
   }
 }
@@ -285,19 +289,14 @@ export async function* processTabBatches(tabs, batchSize = 10) {
  * @returns {Promise<boolean>}
  */
 export async function handleTabCreation(tab) {
-  const state = stateManager.getState();
+  const maxTabs = stateManager.selectors.selectMaxTabs(stateManager.getState());
   const allTabs = await browser.tabs.query({});
-  if (allTabs.length > state.settings.maxTabs) {
-    stateManager.dispatch(stateManager.actions.tabManagement.updateOldestTab(
-      allTabs.reduce((oldest, t) => {
-        const activity = state.tabManagement.activity;
-        const lastAccessed = activity[t.id]?.lastAccessed || 0;
-        if (!oldest || lastAccessed < (activity[oldest.id]?.lastAccessed || 0)) {
-          return t;
-        }
-        return oldest;
-      }, null)
-    ));
+  
+  if (allTabs.length > maxTabs) {
+    const oldestTab = stateManager.selectors.selectOldestTab(stateManager.getState());
+    if (oldestTab) {
+      stateManager.dispatch(stateManager.actions.tabManagement.updateOldestTab(oldestTab));
+    }
     return false;
   }
   return true;
@@ -702,12 +701,21 @@ export async function tagTabAndBookmark(tabId, tag) {
  */
 export class TabManager {
   constructor() {
-    // Initialize any class fields if needed
+    this.initialized = false;
+    this.stateManager = null;
   }
 
-  async initialize() {
+  async initialize(stateManagerInstance) {
+    if (this.initialized) return;
+    if (!stateManagerInstance || !stateManagerInstance.store) {
+      throw new Error('Valid StateManager instance required');
+    }
+    
+    this.stateManager = stateManagerInstance;
+    stateManager = stateManagerInstance; // Set the module-level stateManager
+    
+    this.initialized = true;
     logger.info('Tab manager initialized', { time: Date.now() });
-    // ...additional initialization code if needed...
   }
 
   async handleTabUpdate(tabId, changeInfo, tab) {
@@ -734,33 +742,21 @@ export class TabManager {
   }
 
   async enforceTabLimits() {
-    const state = stateManager.getState();
-    const maxTabs = state.settings.maxTabs || 100; // Default if not set
-
+    const maxTabs = stateManager.selectors.selectSettings(stateManager.getState()).maxTabs;
     const allTabs = await browser.tabs.query({});
-    if (allTabs.length <= maxTabs) {
-      // No action needed if within limit
-      return;
-    }
+    
+    if (allTabs.length <= maxTabs) return;
 
-    // We exceed the limit, find the oldest tab
-    const activity = state.tabManagement.activity || {};
-
-    // Sort tabs by last accessed time (oldest first)
-    const sortedTabs = allTabs.sort((a, b) => {
-      const aLast = activity[a.id]?.lastAccessed || 0;
-      const bLast = activity[b.id]?.lastAccessed || 0;
-      return aLast - bLast;
-    });
-
+    const activity = stateManager.selectors.selectTabActivity(stateManager.getState());
+    const sortedTabs = this._getSortedTabsByActivity(allTabs, activity);
     const oldestTab = sortedTabs[0];
+
     logger.info('Tab limit exceeded, oldest tab identified', {
       currentCount: allTabs.length,
       maxTabs,
       oldestTab: oldestTab.id
     });
 
-    // Update oldestTab in state so that the popup sees it and shows the prompt
     stateManager.dispatch(stateManager.actions.tabManagement.updateOldestTab(oldestTab));
   }
 
@@ -818,13 +814,35 @@ export class TabManager {
       }
     }
   }
+
+  async getSessions() {
+    try {
+      const state = stateManager.getState();
+      logger.info('Retrieving sessions:', { sessions: state.sessions });
+      return state.sessions || [];
+    } catch (error) {
+      logger.error('Error fetching sessions:', { error: error.message });
+      return [];
+    }
+  }
 }
 
 // Export a singleton instance of TabManager
-export const tabManager = new TabManager();
+const tabManager = new TabManager();
+export { tabManager };
 
 // Only exporting TAB_STATES to avoid confusion since we rely on store/actions for everything else
 export {
   TAB_STATES
 };
+
+export async function initialize() {
+  if (!stateManager) {
+    throw new Error('StateManager instance not set. Please call initializeStateManager first.');
+  }
+  if (!stateManager.store) {
+    throw new Error('Valid StateManager instance required');
+  }
+  logger.info('Tab manager initialized', stateManager.store);
+}
 

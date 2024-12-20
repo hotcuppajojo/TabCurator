@@ -305,3 +305,5 @@ setInterval(() => {
     }
   }
 }, 300000); // Clean every 5 minutes
+
+export default browser;

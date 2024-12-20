@@ -1,15 +1,15 @@
 // popup/popup.jsx
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom';
+import { Provider } from 'react-redux';
+import { store } from '../utils/stateManager.js';
+import { connection } from '../utils/connectionManager.js';
 import browser from 'webextension-polyfill';
 import { useDispatch, useSelector } from 'react-redux';
-import { connection } from '../utils/connectionManager.js';
-import { store, actions } from '../utils/stateManager.js';
 import { MESSAGE_TYPES, TAB_OPERATIONS, CONFIG } from '../utils/constants.js';
 import TabLimitPrompt from './TabLimitPrompt.jsx';
-import { Provider } from 'react-redux';
 
-export default function Popup() {
+const Popup = () => {
   const [tabs, setTabs] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [isTaggingPromptVisible, setIsTaggingPromptVisible] = useState(false);
@@ -40,10 +40,7 @@ export default function Popup() {
       }));
 
       try {
-        // Ensure the connection manager is initialized
-        await connection.initialize();
-
-        // Connect returns a connectionId
+        // Try to connect and validate background initialization
         const cId = await connection.connect({
           name: 'popup',
           timeout: 3000
@@ -51,7 +48,7 @@ export default function Popup() {
 
         const p = connection.getPort(cId);
         if (!p) {
-          throw new Error('Failed to retrieve port from connectionId');
+          throw new Error('Failed to retrieve port');
         }
 
         setConnected(true);
@@ -63,18 +60,23 @@ export default function Popup() {
           error: null
         });
 
+        // Setup message listeners after successful connection
         p.onMessage.addListener((msg) => {
+          if (msg.error) {
+            setErrorMsg(msg.error);
+            return;
+          }
           if (msg.type === MESSAGE_TYPES.STATE_UPDATE) {
             loadTabs();
           }
         });
 
         p.onDisconnect.addListener(() => {
-          const error = browser.runtime.lastError;
           setConnected(false);
           setPort(null);
           
-          if (error?.message && error.message.includes('Extension context invalidated')) {
+          const error = browser.runtime.lastError;
+          if (error?.message.includes('Extension context invalidated')) {
             setTimeout(connectWithRetry, 1000);
           }
         });
@@ -88,7 +90,7 @@ export default function Popup() {
         }));
 
         if (connectionState.attempts < 3) {
-          setTimeout(connectWithRetry, 1000 * (connectionState.attempts + 1));
+          setTimeout(connectWithRetry, 1000 * Math.pow(2, connectionState.attempts));
         }
       }
     };
@@ -102,37 +104,69 @@ export default function Popup() {
     };
   }, []);
 
+  // Enhanced tab limit check
   useEffect(() => {
     const checkTabLimit = async () => {
       const allTabs = await browser.tabs.query({});
       setTabCount(allTabs.length);
 
-      if (allTabs.length >= maxTabs && connectionId) {
-        // Request oldest tab from background
-        const oldest = await sendMessage({
-          type: MESSAGE_TYPES.TAB_ACTION,
-          action: 'getOldestTab'
-        });
+      // If we're at or above the limit
+      if (allTabs.length >= maxTabs) {
+        // Find and close the oldest tab
+        try {
+          const oldest = await sendMessage({
+            type: MESSAGE_TYPES.TAB_ACTION,
+            action: TAB_OPERATIONS.GET_OLDEST,
+            payload: {} // Added empty payload
+          });
 
-        if (oldest) {
-          setIsTaggingPromptVisible(true);
+          if (oldest) {
+            setIsTaggingPromptVisible(true);
+            // Prevent new tab creation if we're at the limit
+            const currentTab = await browser.tabs.getCurrent();
+            if (currentTab && allTabs.length > maxTabs) {
+              await browser.tabs.remove(currentTab.id);
+            }
+          }
+        } catch (error) {
+          console.error('Error handling tab limit:', error);
         }
       }
     };
 
     checkTabLimit();
-    browser.tabs.onCreated.addListener(checkTabLimit);
-    browser.tabs.onRemoved.addListener(checkTabLimit);
+    
+    // Listen for tab changes
+    const tabListener = async (tab) => {
+      await checkTabLimit();
+    };
+
+    browser.tabs.onCreated.addListener(tabListener);
+    browser.tabs.onRemoved.addListener(tabListener);
 
     return () => {
-      browser.tabs.onCreated.removeListener(checkTabLimit);
-      browser.tabs.onRemoved.removeListener(checkTabLimit);
+      browser.tabs.onCreated.removeListener(tabListener);
+      browser.tabs.onRemoved.removeListener(tabListener);
     };
   }, [maxTabs, connectionId]);
 
+  useEffect(() => {
+    // Expose logger to the popup's window for console access
+    if (process.env.NODE_ENV !== 'production') {
+      window.tabCuratorLogger = logger;
+      console.info('tabCuratorLogger is available in the popup console.');
+    }
+  }, []);
+
   const sendMessage = async (message) => {
     if (!connectionId) throw new Error('No active connection');
-    return connection.sendMessage(connectionId, message);
+    try {
+      const response = await connection.sendMessage(connectionId, message);
+      return response;
+    } catch (error) {
+      console.error('Send Message Error:', error);
+      throw error;
+    }
   };
 
   const loadTabs = async () => {
@@ -156,12 +190,18 @@ export default function Popup() {
       return;
     }
     
-    console.log('Suspending inactive tabs...');
     try {
-      await sendMessage({
+      const response = await sendMessage({
         type: MESSAGE_TYPES.TAB_ACTION,
-        action: 'suspendInactiveTabs'
+        action: TAB_OPERATIONS.SUSPEND_INACTIVE,
+        payload: { operation: 'SUSPEND_INACTIVE' }
       });
+
+      if (response && response.error) { // Added check for response existence
+        setErrorMsg(response.error);
+        return;
+      }
+
       console.log('Successfully sent suspend message');
       await loadTabs();
     } catch (error) {
@@ -171,15 +211,22 @@ export default function Popup() {
   };
 
   const saveSession = async () => {
+    if (!connected || !connectionId) {
+      setErrorMsg('Not connected');
+      return;
+    }
+
     const sessionName = prompt('Enter a name for this session:');
     if (sessionName) {
       try {
-        await sendMessage({
+        await connection.sendMessage(connectionId, {
           type: MESSAGE_TYPES.SESSION_ACTION,
           action: 'saveSession',
           payload: { sessionName }
         });
+        
         console.log(`Session "${sessionName}" saved successfully.`);
+        await loadSessions(); // Refresh sessions list
       } catch (error) {
         console.error('Error saving session:', error);
         setErrorMsg('Error saving session');
@@ -190,14 +237,34 @@ export default function Popup() {
   const loadSessions = async () => {
     try {
       setErrorMsg('');
+      console.log('Sending getSessions message...');
+      
       const response = await sendMessage({
-        type: MESSAGE_TYPES.SESSION_ACTION,
-        action: 'getSessions'
+        type: MESSAGE_TYPES.GET_SESSIONS,
+        payload: {} // Ensure payload is present
       });
-      setSessions(response.sessions || []);
+
+      if (!response) { // Added check for undefined response
+        setErrorMsg('Received undefined response from getSessions');
+        setSessions([]);
+        return;
+      }
+      
+      if (response.error) {
+        setErrorMsg(response.error);
+        setSessions([]);
+        return;
+      }
+
+      console.log('Raw sessions response:', response);
+      const sessions = response.sessions || [];
+      console.log('Processed sessions:', sessions);
+      setSessions(sessions);
+      
     } catch (error) {
       console.error('Error loading sessions:', error);
       setErrorMsg('Error loading sessions');
+      setSessions([]);
     }
   };
 
@@ -229,7 +296,7 @@ export default function Popup() {
       setErrorMsg(`Failed to tag and close tab: ${error.message}`);
     }
   };
-
+  
   const openOptions = async () => {
     console.log('Opening options page...');
     try {
@@ -313,11 +380,28 @@ export default function Popup() {
       )}
     </div>
   );
-}
+};
 
-ReactDOM.render(
-  <Provider store={store}>
-    <Popup />
-  </Provider>,
-  document.getElementById('root')
-);
+// Wrap the render with error boundary
+const renderPopup = () => {
+  try {
+    ReactDOM.render(
+      <Provider store={store}>
+        <Popup />
+      </Provider>,
+      document.getElementById('root')
+    );
+  } catch (error) {
+    console.error('Error rendering popup:', error);
+    // Render error fallback
+    ReactDOM.render(
+      <div className="error-container">
+        <h2>Error Loading TabCurator</h2>
+        <p>Please try reloading the extension.</p>
+      </div>,
+      document.getElementById('root')
+    );
+  }
+};
+
+renderPopup();

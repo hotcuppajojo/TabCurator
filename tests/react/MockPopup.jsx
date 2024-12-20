@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { useSelector } from 'react-redux';
+import stateManager from '../../utils/stateManager.js'; // Ensure stateManager is used if needed
 
 const MockPopup = () => {
   const tabs = useSelector(state => state?.tabManagement?.tabs ?? []);

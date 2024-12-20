@@ -6,18 +6,21 @@ module.exports = {
   presets: [
     ["@babel/preset-env", {
       targets: { 
-        node: 'current',
-        chrome: '88'
+        chrome: "88"
       },
-      modules: 'commonjs'
+      modules: "auto",
+      useBuiltIns: "entry",
+      corejs: 3
     }],
-    '@babel/preset-react'
+    ["@babel/preset-react", {
+      runtime: "automatic"
+    }]
   ],
   plugins: [
-    ['@babel/plugin-transform-runtime', { 
-      regenerator: true,
-      useESModules: false,
-      helpers: true
+    ["@babel/plugin-transform-runtime", { 
+      corejs: 3,
+      helpers: true,
+      regenerator: true
     }]
   ]
 };
