@@ -35,7 +35,8 @@ const browserMock = {
         addListener: jest.fn(),
         removeListener: jest.fn()
       },
-      postMessage: jest.fn()
+      postMessage: jest.fn(),
+      disconnect: jest.fn()  // Add disconnect method
     })
   },
   storage: {
@@ -48,11 +49,15 @@ const browserMock = {
       get: jest.fn().mockResolvedValue({}),
       set: jest.fn().mockResolvedValue(),
     },
-    estimate: jest.fn().mockResolvedValue({ quota: 1000000, usage: 500000 }), // Added mock for storage.estimate
+    estimate: jest.fn().mockResolvedValue({
+      quota: 102400000,    // 100MB
+      usage: 51200000,     // 50MB
+      available: 51200000  // 50MB
+    }),
     onChanged: {
-      addListener: jest.fn(), // Added mock for storage.onChanged.addListener
+      addListener: jest.fn(),
       removeListener: jest.fn(),
-    },
+    }
   },
   notifications: {
     create: jest.fn().mockResolvedValue('notification-id'),
