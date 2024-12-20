@@ -6,7 +6,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { connection } from '../utils/connectionManager.js';
 import { store, actions } from '../utils/stateManager.js';
 import { MESSAGE_TYPES, TAB_OPERATIONS, CONFIG } from '../utils/constants.js';
-import { TabLimitPrompt } from './TabLimitPrompt.jsx'; // Ensure correct import path for TabLimitPrompt
+import TabLimitPrompt from './TabLimitPrompt.jsx'; // Changed from destructured import
 
 export default function Popup() {
   const [tabs, setTabs] = useState([]);

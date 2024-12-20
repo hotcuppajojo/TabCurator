@@ -279,6 +279,10 @@ class Logger {
     });
   }
 
+  critical(message, context = {}) {
+    this.log('critical', message, context);
+  }
+
   warn(message, context = {}) {
     this.log('warn', message, context);
   }

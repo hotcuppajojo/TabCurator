@@ -21,6 +21,7 @@ jest.mock('../../../utils/logger.js', () => ({
     info: jest.fn(),
     error: jest.fn(),
     warn: jest.fn(),
-    debug: jest.fn()
+    debug: jest.fn(),
+    critical: jest.fn(), // Added critical method mock
   }
 }));

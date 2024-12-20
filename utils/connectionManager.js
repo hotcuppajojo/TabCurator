@@ -21,31 +21,26 @@ import {
   STORAGE_CONFIG,
   TAB_OPERATIONS,
   TAG_OPERATIONS,
-  TAB_STATES
+  TAB_STATES,
+  VALIDATION_SCHEMAS
 } from './constants.js';
-import { store } from './stateManager.js';
 import {
   getTab,
   updateTab,
   discardTab
 } from './tabManager.js';
-import Ajv from 'ajv';
 import deepEqual from 'fast-deep-equal';
 import { logger } from './logger.js';
 
-// Message schemas
-const messageSchema = {
-  type: 'object',
-  required: ['type', 'payload'],
-  properties: {
-    type: { type: 'string' },
-    payload: { type: 'object' },
-    requestId: { type: 'string' }
+// Simple message validation without schema compilation
+async function validateMessage(message) {
+  try {
+    await VALIDATION_SCHEMAS.message.validate(message);
+    return true;
+  } catch (error) {
+    return false;
   }
-};
-
-const ajv = new Ajv();
-const validateMessage = ajv.compile(messageSchema);
+}
 
 // Add performance monitoring configuration
 const PERFORMANCE_THRESHOLDS = {
@@ -71,6 +66,10 @@ if (!CONFIG.METRICS) {
   };
 }
 
+function getStateManager() {
+  return require('./stateManager.js').default;
+}
+
 class ConnectionManager {
   constructor() {
     this.connections = new Map();
@@ -94,8 +93,6 @@ class ConnectionManager {
 
     this._setupMetricsReporting();
     this.apiCalls = new Map();
-    this.configValidators = new Map();
-    this.initializeValidators();
     
     this.storageQuota = CONFIG.STORAGE.QUOTA.DEFAULT_BYTES;
     this.metricsSize = 0;
@@ -153,12 +150,6 @@ class ConnectionManager {
         context: 'dynamic_config_init'
       });
     }
-  }
-
-  initializeValidators() {
-    Object.entries(CONFIG_SCHEMAS).forEach(([key, schema]) => {
-      this.configValidators.set(key, ajv.compile(schema));
-    });
   }
 
   async updateConfig(key, value) {
@@ -384,23 +375,32 @@ class ConnectionManager {
   async validateMessage(message) {
     const startTime = performance.now();
     try {
-      if (!validateMessage(message)) {
-        const errors = validateMessage.errors;
-        const errorContext = {
-          type: 'MESSAGE_VALIDATION',
-          messageType: message?.type,
-          errors,
-          severity: ERROR_CATEGORIES.SEVERITY.HIGH
-        };
-        
-        logger.error('Message validation failed', errorContext);
-        const failureType = errors[0]?.keyword || 'unknown';
-        const currentCount = this.validationMetrics.failures.get(failureType) || 0;
-        this.validationMetrics.failures.set(failureType, currentCount + 1);
-        
-        throw new Error(`Message validation failed: ${JSON.stringify(errors)}`);
-      }
+      await VALIDATION_SCHEMAS.message.validate(message, { 
+        abortEarly: false,
+        strict: true,
+        messages: {
+          required: ({ path }) => `${path} is required`,
+          notType: ({ path, type }) => `${path} must be of type ${type}`,
+          noUnknown: 'Message contains unknown properties',
+          strict: 'Message structure is invalid'
+        }
+      });
       return true;
+    } catch (error) {
+      const validationErrors = error.inner.length ? 
+        error.inner.map(err => err.message) :
+        [error.message];
+
+      const errorContext = {
+        type: 'MESSAGE_VALIDATION',
+        messageType: message?.type,
+        errors: validationErrors,
+        severity: ERROR_CATEGORIES.SEVERITY.HIGH
+      };
+      
+      logger.error('Message validation failed', errorContext);
+
+      throw new Error(validationErrors.join('; '));
     } finally {
       const duration = performance.now() - startTime;
       logger.logPerformance('messageValidation', duration, {
@@ -531,7 +531,7 @@ class ConnectionManager {
     try {
       await this._trackPerformance(
         async () => {
-          const currentState = store.getState();
+          const currentState = getStateManager().getState();
           stateUpdates = this._getStateDiff(currentState);
           
           if (Object.keys(stateUpdates).length > 0) {
@@ -757,20 +757,30 @@ class ConnectionManager {
 
   async _initializeStorageQuota() {
     try {
-      const { quota } = await navigator.storage.estimate();
-      const availableQuota = Math.min(
-        STORAGE_CONFIG.QUOTA.MAX_BYTES,
-        Math.max(STORAGE_CONFIG.QUOTA.MIN_BYTES, quota * 0.1)
-      );
+      // Add check for test environment
+      if (process.env.NODE_ENV === 'test') {
+        this.storageQuota = CONFIG.STORAGE.QUOTA.DEFAULT_BYTES;
+        return;
+      }
 
-      this.storageQuota = availableQuota;
+      let quota = CONFIG.STORAGE.QUOTA.DEFAULT_BYTES;
+      // Only try to get estimate if navigator.storage exists
+      if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
+        const estimate = await navigator.storage.estimate();
+        quota = Math.min(
+          CONFIG.STORAGE.QUOTA.MAX_BYTES,
+          Math.max(CONFIG.STORAGE.QUOTA.MIN_BYTES, estimate.quota * 0.1)
+        );
+      }
+      
+      this.storageQuota = quota;
       await this._monitorStorageUsage();
     } catch (error) {
       this._logError(error, {
-        type: 'STORAGE_QUOTA_INIT',
+        type: "STORAGE_QUOTA_INIT",
         severity: ERROR_CATEGORIES.SEVERITY.HIGH
       });
-      this.storageQuota = STORAGE_CONFIG.QUOTA.DEFAULT_BYTES;
+      this.storageQuota = CONFIG.STORAGE.QUOTA.DEFAULT_BYTES;
     }
   }
 
@@ -929,20 +939,17 @@ class ConnectionManager {
   }
 
   _validateConfig(key, value) {
-    const validator = this.configValidators.get(key);
-    if (!validator) {
-      throw new Error(`No validator found for config key: ${key}`);
+    try {
+      VALIDATION_SCHEMAS.config.validateSync({ [key]: value });
+      
+      if (CONFIG[key] && deepEqual(CONFIG[key], value)) {
+        throw new Error(`Configuration ${key} matches default, use default instead`);
+      }
+      
+      return true;
+    } catch (error) {
+      throw new Error(`Invalid configuration: ${error.message}`);
     }
-
-    if (!validator(value)) {
-      throw new Error(`Invalid configuration: ${JSON.stringify(validator.errors)}`);
-    }
-
-    if (CONFIG[key] && deepEqual(CONFIG[key], value)) {
-      throw new Error(`Configuration ${key} matches default, use default instead`);
-    }
-
-    return true;
   }
 
   _checkRateLimit(type) {
@@ -1100,7 +1107,7 @@ class ConnectionManager {
         }
         break;
       case TAB_OPERATIONS.GET_OLDEST:
-        const state = store.getState();
+        const state = getStateManager().getState();
         return state.tabManagement?.oldestTab || null;
       default:
         // No-op

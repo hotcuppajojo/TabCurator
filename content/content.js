@@ -5,8 +5,7 @@
  * Implements a debounced activity reporting mechanism.
  */
 
-import browser from 'webextension-polyfill';
-
+import { runtime } from "webextension-polyfill";
 /**
  * Debounced function to report user activity.
  * Prevents excessive messaging by limiting the frequency of reports.
@@ -18,7 +17,7 @@ const createDebouncedActivityReporter = (delay = 1000) => {
     timeoutId = setTimeout(async () => {
       try {
         // Dispatch an action to update tab activity
-        await browser.runtime.sendMessage({
+        await runtime.sendMessage({
           action: 'DISPATCH_ACTION',
           payload: { type: 'UPDATE_TAB_ACTIVITY', timestamp: Date.now() }
         });

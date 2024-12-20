@@ -4,12 +4,69 @@ import {
   updateTab, 
   discardTab,
   validateTab,
-  processTabBatch
+  processTabBatch,
+  createTabManager
 } from '../../../utils/tabManager';
+import { logger } from '../../../utils/logger';
+import browser from 'webextension-polyfill';
+
+// Mock stateManager
+jest.mock('../../../utils/stateManager', () => ({
+  __esModule: true,
+  default: {
+    dispatch: jest.fn(),
+    getState: jest.fn(() => ({
+      tabManagement: {
+        tabs: [],
+        activity: {},
+        oldestTab: null
+      },
+      settings: {
+        maxTabs: 100
+      }
+    })),
+    actions: {
+      tabManagement: {
+        updateTab: jest.fn(),
+        removeTab: jest.fn()
+      },
+      archivedTabs: {
+        archiveTab: jest.fn()
+      }
+    }
+  }
+}));
+
+// Mock logger
+jest.mock('../../../utils/logger', () => ({
+  __esModule: true,
+  logger: {
+    info: jest.fn(),
+    debug: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    critical: jest.fn()
+  }
+}));
+
+// Mock browser API
+jest.mock('webextension-polyfill', () => ({
+  __esModule: true,
+  default: {
+    tabs: {
+      get: jest.fn().mockResolvedValue({ id: 1, url: 'https://example.com', title: 'Test Tab' }),
+      remove: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockResolvedValue({ id: 1 })
+    },
+  }
+}));
 
 describe('Tab Manager Unit Tests', () => {
+  let tabManager;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    tabManager = createTabManager();
   });
 
   describe('validateTab', () => {
@@ -41,5 +98,23 @@ describe('Tab Manager Unit Tests', () => {
     });
   });
 
-  // ... add more test cases for other functions
+  test('should initialize tab manager', async () => {
+    await tabManager.initialize();
+    expect(logger.info).toHaveBeenCalledWith(
+      'Tab manager initialized',
+      expect.any(Object)
+    );
+  });
+
+  test('should handle tab updates', async () => {
+    const mockTab = { id: 1, url: 'https://example.com' };
+    await tabManager.handleTabUpdate(1, { status: 'complete' }, mockTab);
+    
+    expect(browser.tabs.get).toHaveBeenCalledWith(1);
+  });
+
+  test('should handle tab removal', async () => {
+    await tabManager.handleTabRemove(1);
+    expect(browser.tabs.get).toHaveBeenCalledWith(1);
+  });
 });

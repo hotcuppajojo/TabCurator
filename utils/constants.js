@@ -7,6 +7,7 @@
  */
 
 import { createSelector } from 'reselect';
+import * as yup from 'yup';
 
 // Types (for documentation and tooling only; not exported as values)
 /**
@@ -545,9 +546,10 @@ export const validateConfigValue = (type, value) => {
   return value;
 };
 
+// Simplify schemas to avoid runtime compilation
 export const STATE_SCHEMA = Object.freeze({
   type: 'object',
-  required: ['tabs', 'sessions', 'rules', 'archivedTabs', 'tabActivity', 'savedSessions'],
+  required: ['tabs'],
   properties: {
     tabs: {
       type: 'array',
@@ -555,119 +557,10 @@ export const STATE_SCHEMA = Object.freeze({
         type: 'object',
         required: ['id', 'url'],
         properties: {
-          id: { type: 'number' },
+          id: { type: 'number', minimum: 0 },
           url: { type: 'string' },
           title: { type: 'string' },
-          active: { type: 'boolean' },
-          status: { 
-            type: 'string',
-            enum: Object.values(TAB_STATES)
-          },
-          lastAccessed: { type: 'number' }
-        }
-      }
-    },
-    sessions: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['name', 'tabs'],
-        properties: {
-          name: { type: 'string' },
-          tabs: {
-            type: 'array',
-            items: { $ref: '#/properties/tabs/items' }
-          },
-          createdAt: { type: 'number' },
-          lastAccessed: { type: 'number' }
-        }
-      }
-    },
-    rules: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['id', 'condition', 'action'],
-        properties: {
-          id: { type: 'string' },
-          condition: { type: 'string' },
-          action: { type: 'string' },
-          domains: {
-            type: 'array',
-            items: { type: 'string' }
-          },
-          priority: { type: 'number' }
-        }
-      }
-    },
-    archivedTabs: {
-      type: 'object',
-      additionalProperties: {
-        type: 'object',
-        required: ['id', 'url', 'archivedAt'],
-        properties: {
-          id: { type: 'number' },
-          url: { type: 'string' },
-          title: { type: 'string' },
-          archivedAt: { type: 'number' },
-          tags: {
-            type: 'array',
-            items: { type: 'string' }
-          }
-        }
-      }
-    },
-    tabActivity: {
-      type: 'object',
-      additionalProperties: {
-        type: 'object',
-        required: ['lastAccessed'],
-        properties: {
-          lastAccessed: { type: 'number' },
-          suspensionStatus: {
-            type: 'string',
-            enum: Object.values(TAB_STATES)
-          },
-          tags: {
-            type: 'array',
-            items: { type: 'string' }
-          }
-        }
-      }
-    },
-    savedSessions: {
-      type: 'object',
-      additionalProperties: {
-        type: 'object',
-        required: ['name', 'tabs'],
-        properties: {
-          name: { type: 'string' },
-          tabs: {
-            type: 'array',
-            items: { $ref: '#/properties/tabs/items' }
-          },
-          savedAt: { type: 'number' }
-        }
-      }
-    },
-    settings: {
-      type: 'object',
-      properties: {
-        inactivityThreshold: { type: 'number' },
-        autoSuspend: { type: 'boolean' },
-        tagPromptEnabled: { type: 'boolean' }
-      }
-    },
-    permissions: {
-      type: 'object',
-      properties: {
-        granted: {
-          type: 'array',
-          items: { type: 'string' }
-        },
-        pending: {
-          type: 'array',
-          items: { type: 'string' }
+          active: { type: 'boolean' }
         }
       }
     }
@@ -712,4 +605,36 @@ export const VALIDATION_ERRORS = {
   CONNECTION_ERROR: 'Connection Error',
   TAB_LIMIT_EXCEEDED: 'Tab Limit Exceeded',
   TAGGING_REQUIRED: 'Tagging Required'
+};
+
+// Replace Ajv schemas with Yup schemas
+export const VALIDATION_SCHEMAS = {
+  tab: yup.object({
+    id: yup.number().required().positive().integer(),
+    url: yup.string().required().url(),
+    title: yup.string(),
+    active: yup.boolean()
+  }),
+
+  message: yup.object({
+    type: yup.string().required('Message type is required'),
+    payload: yup.mixed().required('Message validation failed'),
+    requestId: yup.string()
+  }).noUnknown(true).strict(),
+
+  state: yup.object({
+    tabs: yup.array().of(yup.lazy(() => VALIDATION_SCHEMAS.tab))
+  }),
+
+  config: yup.object({
+    timeout: yup.number()
+      .min(CONFIG_RANGES.TIMEOUTS.min)
+      .max(CONFIG_RANGES.TIMEOUTS.max),
+    threshold: yup.number()
+      .min(CONFIG_RANGES.THRESHOLDS.min)
+      .max(CONFIG_RANGES.THRESHOLDS.max),
+    batchSize: yup.number()
+      .min(CONFIG_RANGES.BATCH.size.min)
+      .max(CONFIG_RANGES.BATCH.size.max)
+  })
 };

@@ -3,9 +3,11 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import CopyWebpackPlugin from 'copy-webpack-plugin';
+import HtmlWebpackPlugin from 'html-webpack-plugin';
 import webpack from 'webpack';
+import { createRequire } from 'module';
 
-// Define __dirname in ES Modules
+const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -19,27 +21,25 @@ export default (env) => {
       background: './background/background.js',
       popup: './popup/popup.jsx',
       options: './options/options.jsx',
-      content: './content/content.js'
+      content: './content/content.js',
     },
 
     output: {
       path: path.resolve(__dirname, `build/${target}`),
       filename: '[name]/[name].js',
       clean: true,
-      module: true, // Output as ES modules
-      library: {
-        type: 'module' // Ensure output in ES module format
-      }
+      environment: {
+        module: true,
+        dynamicImport: true,
+      },
     },
 
     devtool: env.mode === 'development' ? 'source-map' : false,
 
     experiments: {
-      outputModule: true // Allow module output
+      outputModule: true,
+      topLevelAwait: true,
     },
-
-    // Target a service worker environment
-    target: 'webworker',
 
     module: {
       rules: [
@@ -49,22 +49,23 @@ export default (env) => {
           use: {
             loader: 'babel-loader',
             options: {
-              sourceType: 'unambiguous',
               presets: [
                 '@babel/preset-react',
-                ['@babel/preset-env', { targets: { esmodules: true }, modules: false }]
+                ['@babel/preset-env', { targets: { chrome: '88' }, modules: false }],
               ],
-              plugins: [
-                ['@babel/plugin-transform-runtime', { useESModules: true }]
-              ]
-            }
-          }
+              plugins: [['@babel/plugin-transform-runtime', { useESModules: false }]],
+            },
+          },
         },
         {
           test: /\.css$/,
-          use: ['style-loader', 'css-loader']
-        }        
-      ]
+          use: ['style-loader', 'css-loader'],
+        },
+        {
+          test: /\.(png|svg|jpg|jpeg|gif)$/i,
+          type: 'asset/resource',
+        },
+      ],
     },
 
     plugins: [
@@ -72,27 +73,42 @@ export default (env) => {
         patterns: [
           { from: `browsers/${target}/manifest.json`, to: 'manifest.json' },
           { from: `browsers/${target}/icons`, to: 'icons' },
-          { from: 'popup/popup.html', to: 'popup/popup.html' },
-          // { from: 'popup/test-helpers.js', to: 'popup/test-helpers.js' },
-          { from: 'options/options.html', to: 'options/options.html' },
-          { from: 'rules', to: 'rules' }
+          { 
+            from: path.resolve(__dirname, 'node_modules/webextension-polyfill/dist/browser-polyfill.min.js'),
+            to: 'vendor/browser-polyfill.js'
+          }
         ]
       }),
+
+      new HtmlWebpackPlugin({
+        filename: 'popup/popup.html',
+        chunks: ['popup'],
+        template: './popup/popup.html',
+        inject: 'body',
+      }),
+
+      new HtmlWebpackPlugin({
+        filename: 'options/options.html',
+        chunks: ['options'],
+        template: './options/options.html',
+        inject: 'body',
+      }),
+
       new webpack.ProvidePlugin({
-        browser: 'webextension-polyfill'
+        browser: require.resolve('webextension-polyfill')
       })
     ],
 
     resolve: {
-      extensions: ['.js', '.jsx'], // Add .jsx extension
-      modules: [
-        'node_modules',
-        path.resolve(__dirname)
-      ]
+      extensions: ['.js', '.jsx'],
+      alias: {
+        'webextension-polyfill$': require.resolve('webextension-polyfill')
+      }
     },
 
-    externals: {
-      // Add externals if needed
-    }
+    optimization: {
+      moduleIds: 'deterministic',
+      chunkIds: 'deterministic',
+    },
   };
 };

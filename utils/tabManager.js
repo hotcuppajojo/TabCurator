@@ -1,22 +1,9 @@
 /**
  * @fileoverview Tab Manager Module - Handles tab operations with background.js coordination
- * 
- * Architecture & Data Flow:
- * 1. Tab operations trigger validation through background.js
- * 2. State updates are managed by stateManager.js
- * 3. Operations are batched when possible
- * 4. Telemetry is logged via logger module
- * 
- * Error Handling:
- * - All errors flow through logger.error with operation context
- * - Transient failures trigger automatic retries
- * - Operation failures are tracked for telemetry
- * 
- * @module tabManager
  */
 
 import browser from 'webextension-polyfill';
-import { store, actions } from './stateManager.js'; // Removed updateTabActivity, archiveTab imports
+import stateManager from './stateManager.js'; // Changed from destructured import
 import { MESSAGE_TYPES } from './constants.js'; 
 import {
   TAB_STATES,
@@ -124,7 +111,7 @@ export async function getTab(tabId) {
       const tab = await browser.tabs.get(tabId);
       logger.logPerformance('tabGet', performance.now() - startTime, { tabId });
       // Update tab activity using updateTab to reflect last accessed
-      store.dispatch(actions.tabManagement.updateTab({ id: tabId, lastAccessed: Date.now() }));
+      stateManager.dispatch(stateManager.actions.tabManagement.updateTab({ id: tabId, lastAccessed: Date.now() }));
       return tab;
     } catch (error) {
       logger.error('Tab get failed', {
@@ -164,7 +151,7 @@ export async function updateTab(tabId, updateProperties) {
   try {
     const updatedTab = await browser.tabs.update(tabId, updateProperties);
     // Update last accessed time when tab is updated
-    store.dispatch(actions.tabManagement.updateTab({ id: tabId, lastAccessed: Date.now() }));
+    stateManager.dispatch(stateManager.actions.tabManagement.updateTab({ id: tabId, lastAccessed: Date.now() }));
     return updatedTab;
   } catch (err) {
     console.error(`Error updating tab ${tabId}:`, err);
@@ -181,7 +168,7 @@ export async function removeTab(tabId) {
   try {
     await browser.tabs.remove(tabId);
     // Archive the tab using the archivedTabs slice
-    store.dispatch(actions.archivedTabs.archiveTab({ id: tabId, reason: 'Removed' }));
+    stateManager.dispatch(stateManager.actions.archivedTabs.archiveTab({ id: tabId, reason: 'Removed' }));
   } catch (err) {
     console.error(`Error removing tab ${tabId}:`, err);
     throw err;
@@ -208,7 +195,7 @@ export async function discardTab(tabId, criteria) {
     
     // Telemetry feedback loop - if rule priority adjustments needed
     if (duration > CONFIG.THRESHOLDS.TAB_DISCARD) {
-      store.dispatch(actions.rules.updateRulesPriority && actions.rules.updateRulesPriority({
+      stateManager.dispatch(stateManager.actions.rules.updateRulesPriority && stateManager.actions.rules.updateRulesPriority({
         type: 'discard',
         adjustment: 'decrease'
       }));
@@ -267,7 +254,7 @@ export async function checkInactiveTabs() {
   const now = Date.now();
   const tabs = await browser.tabs.query({});
   
-  const state = store.getState();
+  const state = stateManager.getState();
   for (const tab of tabs) {
     const lastActivity = state.tabManagement.activity[tab.id]?.lastAccessed || now;
     const inactiveTime = now - lastActivity;
@@ -275,7 +262,7 @@ export async function checkInactiveTabs() {
     if (inactiveTime >= CONFIG.INACTIVITY_THRESHOLDS.SUSPEND) {
       await discardTab(tab.id);
     } else if (inactiveTime >= CONFIG.INACTIVITY_THRESHOLDS.PROMPT) {
-      store.dispatch({ 
+      stateManager.dispatch({ 
         type: 'SET_TAGGING_PROMPT_ACTIVE', 
         payload: { tabId: tab.id, value: true } 
       });
@@ -296,10 +283,10 @@ export async function* processTabBatches(tabs, batchSize = 10) {
  * @returns {Promise<boolean>}
  */
 export async function handleTabCreation(tab) {
-  const state = store.getState();
+  const state = stateManager.getState();
   const allTabs = await browser.tabs.query({});
   if (allTabs.length > state.settings.maxTabs) {
-    store.dispatch(actions.tabManagement.updateOldestTab(
+    stateManager.dispatch(stateManager.actions.tabManagement.updateOldestTab(
       allTabs.reduce((oldest, t) => {
         const activity = state.tabManagement.activity;
         const lastAccessed = activity[t.id]?.lastAccessed || 0;
@@ -403,7 +390,7 @@ export async function tagTab(tabId, tag) {
     });
     updates.push(['title', updatedTab]);
 
-    await store.dispatch(actions.tabManagement.updateMetadata({ tabId, metadata: stateUpdate }));
+    await stateManager.dispatch(stateManager.actions.tabManagement.updateMetadata({ tabId, metadata: stateUpdate }));
     updates.push(['state', stateUpdate]);
     
     logger.logPerformance('tabTag', performance.now() - startTime, {
@@ -427,7 +414,7 @@ export async function tagTab(tabId, tag) {
         if (type === 'title') {
           await updateTab(tabId, { title: originalTab.title });
         } else if (type === 'state') {
-          await store.dispatch(actions.tabManagement.updateMetadata({ 
+          await stateManager.dispatch(stateManager.actions.tabManagement.updateMetadata({ 
             tabId, 
             metadata: {
               tags: originalTab.tags || [],
@@ -560,7 +547,7 @@ export const activateRules = async (rules) => {
   }
 };
 
-export async function applyRulesToTab(tab, browserInstance, store) {
+export async function applyRulesToTab(tab, browserInstance, stateManager) {
   if (!browserInstance?.declarativeNetRequest) {
     throw new Error("Declarative Net Request API not available");
   }
@@ -587,7 +574,7 @@ export async function applyRulesToTab(tab, browserInstance, store) {
 
             logger.info('Archiving tab due to rule match', { tabId: tab.id, tag });
 
-            await store.dispatch({ 
+            await stateManager.dispatch({ 
               type: MESSAGE_TYPES.RULE_UPDATE,
               payload: { 
                 tag, 
@@ -665,3 +652,29 @@ export const __testing__ = {
 export {
   TAB_STATES
 };
+
+export function createTabManager() {
+  return {
+    initialize: async () => {
+      logger.info('Tab manager initialized', { time: Date.now() });
+      // ...additional initialization code if needed...
+    },
+    handleTabUpdate: async (tabId, changeInfo, tab) => {
+      const updatedTab = await browser.tabs.get(tabId);
+      // ...handle the updated tab...
+    },
+    handleTabRemove: async (tabId) => {
+      const removedTab = await browser.tabs.get(tabId);
+      // ...handle the removed tab...
+    },
+    cleanupInactiveTabs: async () => {
+      // Cleanup inactive tabs
+    },
+    enforceTabLimits: async () => {
+      // Enforce tab limits
+    },
+    cleanup: async () => {
+      // Cleanup resources
+    }
+  };
+}

@@ -17,6 +17,10 @@ const browserMock = {
     onUpdated: {
       addListener: jest.fn(),
       removeListener: jest.fn()
+    },
+    onRemoved: {
+      addListener: jest.fn(), // Ensures addListener is mocked
+      removeListener: jest.fn(),
     }
   },
   runtime: {
@@ -37,7 +41,11 @@ const browserMock = {
       },
       postMessage: jest.fn(),
       disconnect: jest.fn()  // Add disconnect method
-    })
+    }),
+    onConnect: {
+      addListener: jest.fn(), // Added onConnect.addListener mock
+      removeListener: jest.fn(),
+    },
   },
   storage: {
     local: {

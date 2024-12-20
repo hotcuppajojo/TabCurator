@@ -61,4 +61,5 @@ const TabLimitPrompt = () => {
   );
 };
 
+export { TabLimitPrompt };
 export default TabLimitPrompt;
