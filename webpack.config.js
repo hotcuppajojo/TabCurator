@@ -96,7 +96,7 @@ export default (env) => {
 
       new webpack.ProvidePlugin({
         browser: require.resolve('webextension-polyfill')
-      })
+      }),
     ],
 
     resolve: {

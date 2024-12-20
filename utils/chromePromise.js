@@ -17,7 +17,7 @@ const validateStorageItems = (items) => {
   if (!items || typeof items !== 'object') {
     throw new TypeError('Storage items must be an object');
   }
-  // Check if serializable
+  // Check if serializableez
   try {
     JSON.stringify(items);
   } catch (error) {
@@ -181,6 +181,9 @@ export const chromePromise = {
 
   runtime: {
     sendMessage: async (message, options = {}) => {
+      if (!browser.runtime || !browser.runtime.sendMessage) {
+        throw new Error('Runtime API not available');
+      }
       if (!message || typeof message !== 'object') {
         throw new TypeError('Message must be an object');
       }
@@ -194,7 +197,10 @@ export const chromePromise = {
       });
     },
 
-    connect: (connectInfo = {}) => {
+    connect: async (connectInfo = {}) => {
+      if (!browser.runtime || !browser.runtime.connect) {
+        throw new Error('Runtime API not available');
+      }
       try {
         if (connectInfo && typeof connectInfo !== 'object') {
           throw new TypeError('Connection info must be an object');

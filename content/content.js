@@ -5,50 +5,48 @@
  * Implements a debounced activity reporting mechanism.
  */
 
-import { runtime } from "webextension-polyfill";
-/**
- * Debounced function to report user activity.
- * Prevents excessive messaging by limiting the frequency of reports.
- */
-const createDebouncedActivityReporter = (delay = 1000) => {
+import browser from 'webextension-polyfill';
+import { MESSAGE_TYPES } from '../utils/constants.js';
+
+// Debounce helper
+const debounce = (fn, delay) => {
   let timeoutId;
-  return async () => {
+  return (...args) => {
     clearTimeout(timeoutId);
-    timeoutId = setTimeout(async () => {
-      try {
-        // Dispatch an action to update tab activity
-        await runtime.sendMessage({
-          action: 'DISPATCH_ACTION',
-          payload: { type: 'UPDATE_TAB_ACTIVITY', timestamp: Date.now() }
-        });
-        console.log('Tab activity updated.');
-      } catch (error) {
-        console.error('Failed to update tab activity:', error);
-      }
-    }, delay);
+    timeoutId = setTimeout(() => fn(...args), delay);
   };
 };
 
-// Initialize the debounced activity reporter
-const reportActivity = createDebouncedActivityReporter();
+// Send activity updates to service worker
+const reportActivity = debounce(async () => {
+  try {
+    await browser.runtime.sendMessage({
+      type: MESSAGE_TYPES.STATE_UPDATE,
+      action: 'updateActivity',
+      payload: { timestamp: Date.now() }
+    });
+  } catch (error) {
+    if (!error.message.includes('Extension context invalidated')) {
+      console.warn('Failed to report activity:', error);
+    }
+  }
+}, 1000);
 
-// List of user interaction events to monitor
-const activityEvents = ['mousemove', 'keydown', 'scroll'];
-
-// Add event listeners to monitor user activity
-activityEvents.forEach((event) => {
+// Monitor user activity
+['mousemove', 'keydown', 'scroll', 'click'].forEach(event => {
   window.addEventListener(event, reportActivity, { passive: true });
 });
 
-/**
- * Cleans up event listeners when the content script is unloaded.
- */
-const cleanupOnUnload = () => {
-  activityEvents.forEach((event) => {
+// Report activity when tab becomes visible
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    reportActivity();
+  }
+});
+
+// Cleanup on unload
+window.addEventListener('beforeunload', () => {
+  ['mousemove', 'keydown', 'scroll', 'click'].forEach(event => {
     window.removeEventListener(event, reportActivity);
   });
-  console.log('Content script unloaded and cleaned up.');
-};
-
-// Register the cleanup function to run when the page is about to unload
-window.addEventListener('beforeunload', cleanupOnUnload, { once: true });
+}, { once: true });

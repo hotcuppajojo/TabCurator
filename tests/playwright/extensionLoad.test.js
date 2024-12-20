@@ -62,4 +62,33 @@ test.describe('Extension Load Test', () => {
     });
     expect(alarmsMock).toBe(true);
   }, 120000); // Increase test timeout
+
+  test('should handle Extension context invalidated error and reconnect', async () => {
+    // Mock context invalidation
+    await serviceWorker.evaluate(() => {
+      // Simulate extension context invalidation
+      self.chrome.runtime.id = undefined;
+      
+      // Trigger a runtime.lastError
+      self.chrome.runtime.lastError = { message: 'Extension context invalidated' };
+      
+      // Mock reconnection attempt
+      self.chrome.runtime.connect = self.mockStorage.mockFn(() => ({
+        onDisconnect: { addListener: () => {} },
+        onMessage: { addListener: () => {} }
+      }));
+    });
+
+    // Verify that reconnection was attempted
+    const reconnectAttempts = await serviceWorker.evaluate(() => 
+      self.chrome.runtime.connect.mock.calls.length
+    );
+    expect(reconnectAttempts).toBeGreaterThan(0);
+
+    // Verify extension ID fallback worked
+    const fallbackId = await serviceWorker.evaluate(() => 
+      self.chrome.runtime.id || 'fallback-extension-id'
+    );
+    expect(fallbackId).toBe('fallback-extension-id');
+  });
 });

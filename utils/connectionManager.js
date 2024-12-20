@@ -32,16 +32,6 @@ import {
 import deepEqual from 'fast-deep-equal';
 import { logger } from './logger.js';
 
-// Simple message validation without schema compilation
-async function validateMessage(message) {
-  try {
-    await VALIDATION_SCHEMAS.message.validate(message);
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
-
 // Add performance monitoring configuration
 const PERFORMANCE_THRESHOLDS = {
   MESSAGE_PROCESSING: 50,
@@ -73,6 +63,7 @@ function getStateManager() {
 class ConnectionManager {
   constructor() {
     this.connections = new Map();
+    this.nextConnectionId = 1;
     this.messageQueue = [];
     this.isProcessingQueue = false;
     this.retryCount = 0;
@@ -125,6 +116,100 @@ class ConnectionManager {
     this.flushThreshold = CONFIG.BATCH.FLUSH_SIZE;
     this.batchSize = CONFIG.BATCH.DEFAULT?.SIZE || 10;
     this.timeout = CONFIG.BATCH.DEFAULT?.TIMEOUT || 5000;
+
+    this.samplingConfig = {
+      operationCounts: new Map(),
+      highFrequencyThreshold: CONFIG.THRESHOLDS.PERFORMANCE_WARNING,
+      metricsWindow: CONFIG.METRICS.REPORTING_INTERVAL,
+      sampleRate: 0.1
+    };
+
+    this.messageCallbacks = new Map(); // store callbacks by connectionId
+
+    this.runtimeId = browser.runtime.id;
+    
+    this.connectionState = {
+      isReady: false,
+      backgroundInitialized: false,
+      reconnectTimeout: null
+    };
+  }
+
+  async connect(options = {}) {
+    if (!this.connectionState.isReady) {
+      await this.initialize();
+    }
+
+    const connectionId = crypto.randomUUID();
+    const startTime = performance.now();
+
+    try {
+      const port = browser.runtime.connect(undefined, { 
+        name: options.name || 'tabActivity'
+      });
+
+      if (!port) {
+        throw new Error('Failed to create connection port');
+      }
+
+      this.connectionMetrics.activeConnections.set(connectionId, {
+        established: Date.now(),
+        port,
+        messageCount: 0,
+        lastActivity: Date.now()
+      });
+
+      this.connections.set(connectionId, port);
+
+      return connectionId; // Return the connectionId, not the port
+    } catch (error) {
+      this.connectionMetrics.failed++;
+      logger.error('Connection failed', {
+        connectionId,
+        error: error.message,
+        duration: performance.now() - startTime
+      });
+      throw error;
+    }
+  }
+
+  getPort(connectionId) {
+    return this.connectionMetrics.activeConnections.get(connectionId)?.port;
+  }
+
+  async waitForBackground(timeout = 5000) {
+    return new Promise((resolve, reject) => {
+      const checkInterval = 100; // Check every 100ms
+      const maxAttempts = timeout / checkInterval;
+      let attempts = 0;
+
+      const check = () => {
+        attempts++;
+        if (this.connectionState.backgroundInitialized) {
+          resolve();
+        } else if (attempts >= maxAttempts) {
+          reject(new Error('Background initialization timeout'));
+        } else {
+          setTimeout(check, checkInterval);
+        }
+      };
+
+      check();
+    });
+  }
+
+  _scheduleReconnect(options) {
+    // Prevent multiple reconnect attempts
+    if (this.connectionState.reconnectTimeout) return;
+
+    this.connectionState.reconnectTimeout = setTimeout(async () => {
+      try {
+        await this.connect(options);
+        this.connectionState.reconnectTimeout = null;
+      } catch (error) {
+        logger.error('Reconnection failed:', { error: error.message });
+      }
+    }, 1000);
   }
 
   async _initializeDynamicConfig() {
@@ -193,6 +278,11 @@ class ConnectionManager {
 
     if (errorLog.severity >= ERROR_CATEGORIES.SEVERITY.HIGH) {
       console.error('Critical error:', errorLog);
+      logger.error('Message validation failed', {
+        type: 'MESSAGE_VALIDATION',
+        severity: errorLog.severity,
+        ...context
+      });
     } else {
       console.warn('Non-critical error:', errorLog);
     }
@@ -284,71 +374,6 @@ class ConnectionManager {
       if (now - data.lastOccurrence > maxAge) {
         this.metrics.errors.delete(key);
       }
-    }
-  }
-
-  async connect(options = {}) {
-    const connectionId = crypto.randomUUID();
-    const startTime = performance.now();
-    
-    try {
-      const port = browser.runtime.connect({ 
-        name: 'tabActivity',
-        batchSize: options.batchSize || this.batchSize,
-        timeout: options.timeout || this.timeout
-      });
-      
-      const connection = await new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
-          this.connectionMetrics.failed++;
-          logger.error('Connection timeout', {
-            connectionId,
-            duration: performance.now() - startTime,
-            type: 'CONNECTION_TIMEOUT'
-          });
-          reject(new Error('Connection timeout'));
-        }, CONFIG.TIMEOUTS.CONNECTION);
-
-        port.onMessage.addListener((msg) => {
-          if (msg.type === MESSAGE_TYPES.CONNECTION_ACK) {
-            clearTimeout(timeoutId);
-            const duration = performance.now() - startTime;
-            
-            this.connectionMetrics.successful++;
-            this.connectionMetrics.activeConnections.set(connectionId, {
-              established: Date.now(),
-              port,
-              messageCount: 0,
-              lastActivity: Date.now()
-            });
-
-            logger.logPerformance('connectionEstablish', duration, {
-              connectionId,
-              successful: true
-            });
-
-            resolve({ port, duration });
-          }
-        });
-
-        port.onDisconnect.addListener(() => {
-          clearTimeout(timeoutId);
-          this._handleDisconnect(connectionId, startTime);
-          reject(new Error('Connection lost'));
-        });
-      });
-
-      this.connections.set(connectionId, connection.port);
-      return connectionId;
-    } catch (error) {
-      this.connectionMetrics.failed++;
-      logger.error('Connection failed', {
-        connectionId,
-        error: error.message,
-        duration: performance.now() - startTime,
-        type: 'CONNECTION_ERROR'
-      });
-      throw error;
     }
   }
 
@@ -504,10 +529,33 @@ class ConnectionManager {
         async () => this._handleTagAction(payload),
         'TAG_ACTION'
       );
+    },
+
+    [MESSAGE_TYPES.UPDATE_TAB_ACTIVITY]: async (payload) => {
+      return this._measurePerformance(
+        async () => {
+          const { tabId, timestamp } = payload;
+          await this._handleTabActivity(tabId, timestamp);
+        },
+        'TAB_ACTIVITY_UPDATE'
+      );
+    },
+
+    [MESSAGE_TYPES.TEST_MESSAGE]: async (payload) => {
+      return { success: true, data: payload };
+    },
+    [MESSAGE_TYPES.TEST_ACTION]: async (payload) => {
+      return { success: true, data: payload };
     }
   };
 
-  async handleMessage(message, sender) {
+  // Add the onMessage method
+  onMessage(connectionId, callback) {
+    this.messageCallbacks.set(connectionId, callback);
+  }
+
+  // Update the handleMessage method to invoke callbacks
+  async handleMessage(message, senderPort) {
     await this.validateMessage(message);
     
     const handler = this._messageHandlers[message.type];
@@ -515,10 +563,29 @@ class ConnectionManager {
       throw new Error(`Unhandled message type: ${message.type}`);
     }
 
-    return this._measurePerformance(
-      () => handler(message.payload, sender),
+    // Execute handler first to get result
+    const result = await this._measurePerformance(
+      () => handler(message.payload, senderPort),
       'MESSAGE_PROCESSING'
     );
+
+    // Then invoke any registered callbacks
+    const connectionId = this._findConnectionIdByPort(senderPort);
+    const callback = this.messageCallbacks.get(connectionId);
+    if (callback) {
+      callback(message);
+    }
+
+    return result;
+  }
+
+  _findConnectionIdByPort(port) {
+    for (const [id, info] of this.connectionMetrics.activeConnections) {
+      if (info.port === port) {
+        return id; // Return the connection ID if port matches
+      }
+    }
+    return null;
   }
 
   async syncState() {
@@ -1144,6 +1211,24 @@ class ConnectionManager {
     }
   }
 
+  async _handleTabActivity(tabId, timestamp) {
+    if (!tabId) {
+      const activeTab = await browser.tabs.query({ active: true, currentWindow: true });
+      if (activeTab.length > 0) {
+        tabId = activeTab[0].id;
+      }
+    }
+    
+    if (tabId) {
+      await getStateManager().dispatch(
+        actions.tabManagement.updateTab({
+          id: tabId,
+          lastAccessed: timestamp || Date.now()
+        })
+      );
+    }
+  }
+
   async _handleSafariRegistration(registration) {
     logger.info('Handling Safari registration quirks');
     await registration.update();
@@ -1151,6 +1236,67 @@ class ConnectionManager {
 
   setMessageHandler(messageHandler) {
     this._externalMessageHandler = messageHandler;
+  }
+
+  /**
+   * Handles a new port connection.
+   * @param {Object} port - The connected port.
+   * @returns {string} connId - A unique connection ID.
+   */
+  handlePort(port) {
+    const connId = `conn-${this.nextConnectionId++}`;
+    this.connections.set(connId, port);
+
+    port.onDisconnect.addListener(() => {
+      this.handleDisconnect(connId);
+    });
+
+    return connId;
+  }
+
+  /**
+   * Handles the disconnection of a port.
+   * @param {string} connId - The connection ID of the disconnected port.
+   */
+  handleDisconnect(connId) {
+    this.connections.delete(connId);
+    // ...existing code...
+  }
+
+  handleMessage(msg, port) {
+    const connectionId = this._findConnectionIdByPort(port);
+    const callback = this.messageCallbacks.get(connectionId);
+    if (callback) {
+      callback(msg);
+    }
+  }
+
+  /**
+   * Public method to clean up stale connections.
+   */
+  async cleanupConnections() {
+    return this._cleanupConnections();
+  }
+
+  handleDisconnect(connectionId) {
+    return this._handleDisconnect(connectionId);
+  }
+
+  async initialize() {
+    try {
+      if (!browser?.runtime) {
+        throw new Error('Runtime API not available');
+      }
+      this.connectionState.isReady = true;
+      this.connectionState.backgroundInitialized = true;
+      
+      logger.info('Connection manager initialized');
+      return true;
+    } catch (error) {
+      this.connectionState.isReady = false;
+      logger.error('Connection manager initialization failed:', { error: error.message });
+      throw error;
+    }
   }
 }
 
@@ -1177,7 +1323,7 @@ export const {
 } = connection;
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('unload', () => {
+  window.addEventListener('pagehide', () => {
     connection.shutdown().catch(console.error);
   });
   
@@ -1185,3 +1331,4 @@ if (typeof window !== 'undefined') {
     connection.recoverFromCrash().catch(console.error);
   });
 }
+

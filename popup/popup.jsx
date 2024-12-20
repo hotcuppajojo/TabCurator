@@ -6,7 +6,8 @@ import { useDispatch, useSelector } from 'react-redux';
 import { connection } from '../utils/connectionManager.js';
 import { store, actions } from '../utils/stateManager.js';
 import { MESSAGE_TYPES, TAB_OPERATIONS, CONFIG } from '../utils/constants.js';
-import TabLimitPrompt from './TabLimitPrompt.jsx'; // Changed from destructured import
+import TabLimitPrompt from './TabLimitPrompt.jsx';
+import { Provider } from 'react-redux';
 
 export default function Popup() {
   const [tabs, setTabs] = useState([]);
@@ -15,6 +16,14 @@ export default function Popup() {
   const [errorMsg, setErrorMsg] = useState('');
   const [connectionId, setConnectionId] = useState(null);
   const [tabCount, setTabCount] = useState(0);
+  const [port, setPort] = useState(null);
+  const [connected, setConnected] = useState(false);
+
+  const [connectionState, setConnectionState] = useState({
+    isConnecting: false,
+    attempts: 0,
+    error: null
+  });
 
   const dispatch = useDispatch();
   const oldestTab = useSelector(state => state.tabManagement.oldestTab);
@@ -22,25 +31,75 @@ export default function Popup() {
   const { maxTabs } = settings;
 
   useEffect(() => {
-    const connect = async () => {
+    const connectWithRetry = async () => {
+      if (connectionState.isConnecting || connectionState.attempts >= 3) return;
+
+      setConnectionState(prev => ({ 
+        ...prev, 
+        isConnecting: true 
+      }));
+
       try {
-        // Add fallback values and safe access with optional chaining
-        const connId = await connection.connect({
-          batchSize: CONFIG?.BATCH?.DEFAULT?.SIZE || 10,
-          timeout: CONFIG?.BATCH?.DEFAULT?.TIMEOUT || 5000
+        // Ensure the connection manager is initialized
+        await connection.initialize();
+
+        // Connect returns a connectionId
+        const cId = await connection.connect({
+          name: 'popup',
+          timeout: 3000
         });
-        setConnectionId(connId);
-        // Listen for messages from connection if needed
-        connection.onMessage((message) => {
-          // Handle state updates or errors if needed
+
+        const p = connection.getPort(cId);
+        if (!p) {
+          throw new Error('Failed to retrieve port from connectionId');
+        }
+
+        setConnected(true);
+        setConnectionId(cId);
+        setPort(p);
+        setConnectionState({
+          isConnecting: false,
+          attempts: 0,
+          error: null
         });
+
+        p.onMessage.addListener((msg) => {
+          if (msg.type === MESSAGE_TYPES.STATE_UPDATE) {
+            loadTabs();
+          }
+        });
+
+        p.onDisconnect.addListener(() => {
+          const error = browser.runtime.lastError;
+          setConnected(false);
+          setPort(null);
+          
+          if (error?.message && error.message.includes('Extension context invalidated')) {
+            setTimeout(connectWithRetry, 1000);
+          }
+        });
+
       } catch (error) {
-        console.error('Failed to connect to service worker:', error);
+        console.error('Connection failed:', error);
+        setConnectionState(prev => ({
+          isConnecting: false,
+          attempts: prev.attempts + 1,
+          error: error.message
+        }));
+
+        if (connectionState.attempts < 3) {
+          setTimeout(connectWithRetry, 1000 * (connectionState.attempts + 1));
+        }
       }
     };
-    connect();
 
-    return () => connection.disconnect();
+    connectWithRetry();
+
+    return () => {
+      if (port) {
+        port.disconnect();
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -48,7 +107,7 @@ export default function Popup() {
       const allTabs = await browser.tabs.query({});
       setTabCount(allTabs.length);
 
-      if (allTabs.length >= maxTabs) {
+      if (allTabs.length >= maxTabs && connectionId) {
         // Request oldest tab from background
         const oldest = await sendMessage({
           type: MESSAGE_TYPES.TAB_ACTION,
@@ -56,7 +115,6 @@ export default function Popup() {
         });
 
         if (oldest) {
-          // Show prompt
           setIsTaggingPromptVisible(true);
         }
       }
@@ -70,7 +128,7 @@ export default function Popup() {
       browser.tabs.onCreated.removeListener(checkTabLimit);
       browser.tabs.onRemoved.removeListener(checkTabLimit);
     };
-  }, [maxTabs]);
+  }, [maxTabs, connectionId]);
 
   const sendMessage = async (message) => {
     if (!connectionId) throw new Error('No active connection');
@@ -93,15 +151,22 @@ export default function Popup() {
   };
 
   const suspendInactiveTabs = async () => {
+    if (!connected) {
+      console.error('Not connected');
+      return;
+    }
+    
+    console.log('Suspending inactive tabs...');
     try {
-      // If defined in background: just send message
       await sendMessage({
         type: MESSAGE_TYPES.TAB_ACTION,
         action: 'suspendInactiveTabs'
       });
+      console.log('Successfully sent suspend message');
       await loadTabs();
     } catch (error) {
       console.error('Error suspending tabs:', error);
+      setErrorMsg('Error suspending tabs: ' + error.message);
     }
   };
 
@@ -153,7 +218,6 @@ export default function Popup() {
   const handleTagSubmit = async (tag) => {
     if (!oldestTab) return;
     try {
-      // Send TAG_AND_CLOSE action to background
       await sendMessage({
         type: MESSAGE_TYPES.TAB_ACTION,
         action: TAB_OPERATIONS.TAG_AND_CLOSE,
@@ -166,10 +230,28 @@ export default function Popup() {
     }
   };
 
+  const openOptions = async () => {
+    console.log('Opening options page...');
+    try {
+      await browser.runtime.openOptionsPage();
+    } catch (error) {
+      console.error('Failed to open options:', error);
+      const url = browser.runtime.getURL('options/options.html');
+      console.log('Trying fallback with URL:', url);
+      await browser.tabs.create({ url });
+    }
+  };
+
   return (
     <div className="popup-container">
       <h1>TabCurator</h1>
-      <button onClick={suspendInactiveTabs}>Suspend Inactive Tabs</button>
+      <button 
+        onClick={suspendInactiveTabs}
+        disabled={!connected}
+        data-testid="suspend-inactive-tabs"
+      >
+        Suspend Inactive Tabs
+      </button>
       <button onClick={refreshTabs}>Refresh Tabs</button>
       <div id="tab-list">
         {tabs.map((tab) => (
@@ -179,9 +261,19 @@ export default function Popup() {
         ))}
       </div>
 
-      {errorMsg && <div className="error-message">{errorMsg}</div>}
+      <div className="status-bar">
+        {connectionState.isConnecting && (
+          <span className="connecting">Connecting to extension...</span>
+        )}
+        {connectionState.error && (
+          <span className="error">
+            Connection error: {connectionState.error}
+            {connectionState.attempts < 3 && " - Retrying..."}
+          </span>
+        )}
+        {errorMsg && <div className="error-message">{errorMsg}</div>}
+      </div>
 
-      {/* Session management */}
       <div>
         <input id="session-name-input" placeholder="Session Name" />
         <button id="save-session" onClick={saveSession}>Save Current Session</button>
@@ -204,8 +296,9 @@ export default function Popup() {
           Tabs: {tabCount} / {maxTabs}
         </div>
         <button 
-          onClick={() => browser.runtime.openOptionsPage()}
+          onClick={openOptions}
           className="settings-button"
+          data-testid="open-settings"
         >
           Settings
         </button>
@@ -214,7 +307,7 @@ export default function Popup() {
       {isTaggingPromptVisible && oldestTab && (
         <TabLimitPrompt
           oldestTab={oldestTab}
-          onSubmit={handleTagSubmit} // Pass the handleTagSubmit callback
+          onSubmit={handleTagSubmit}
           onClose={() => setIsTaggingPromptVisible(false)}
         />
       )}
@@ -222,4 +315,9 @@ export default function Popup() {
   );
 }
 
-ReactDOM.render(<Popup />, document.getElementById('root'));
+ReactDOM.render(
+  <Provider store={store}>
+    <Popup />
+  </Provider>,
+  document.getElementById('root')
+);

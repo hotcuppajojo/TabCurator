@@ -2,98 +2,96 @@
 import browser from 'webextension-polyfill';
 import { connection } from '../utils/connectionManager.js';
 import { initializeServiceWorkerState } from '../utils/stateManager.js';
-import { createTabManager } from '../utils/tabManager.js';
+import { TabManager } from '../utils/tabManager.js'; 
 import { logger } from '../utils/logger.js';
-import { CONFIG } from '../utils/constants.js';
+import { CONFIG, MESSAGE_TYPES } from '../utils/constants.js';
 
-// Add requestIdleCallback polyfill for tests
-if (typeof requestIdleCallback === 'undefined') {
-  globalThis.requestIdleCallback = (callback) => {
-    const start = Date.now();
-    return setTimeout(() => {
-      callback({
-        didTimeout: false,
-        timeRemaining: () => Math.max(0, 50 - (Date.now() - start))
-      });
-    }, 1);
-  };
-}
+const tabManager = new TabManager();
 
-let isInitialized = false;
-const tabManager = createTabManager();
-
-async function initialize() {
-  if (isInitialized) return;
-  
+async function setupCoordination() {
   try {
-    await initializeServiceWorkerState();
-    await connection.initialize();
-    await tabManager.initialize();
+    if (!browser?.runtime) {
+      throw new Error('Browser APIs not available');
+    }
 
-    setupEventListeners();
-    setupPeriodicTasks();
+    // Initialize core services
+    await Promise.all([
+      connection.initialize(),
+      initializeServiceWorkerState(),
+      tabManager.initialize()
+    ]);
 
-    isInitialized = true;
-    logger.info('Background service worker initialized');
+    // Set up message handling
+    browser.runtime.onMessage.addListener((message, sender) => {
+      return connection.handleMessage(message, sender);
+    });
+
+    // Handle port connections
+    browser.runtime.onConnect.addListener(port => {
+      if (!port) return;
+      
+      const connId = connection.handlePort(port);
+      
+      port.onMessage.addListener(async (message) => {
+        try {
+          if (message.type === MESSAGE_TYPES.TAB_ACTION) {
+            const response = await tabManager[message.action]?.(message.payload);
+            if (response) port.postMessage(response);
+          } else {
+            const response = await connection.handleMessage(message, port);
+            if (response) port.postMessage(response);
+          }
+        } catch (error) {
+          logger.error('Message handling error:', error);
+          port.postMessage({ 
+            type: MESSAGE_TYPES.ERROR,
+            error: error.message 
+          });
+        }
+      });
+
+      port.onDisconnect.addListener(() => {
+        connection.handleDisconnect(connId);
+      });
+    });
+
+    // Tab events
+    browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      tabManager.handleTabUpdate(tabId, changeInfo, tab);
+    });
+    
+    browser.tabs.onRemoved.addListener((tabId) => {
+      tabManager.handleTabRemove(tabId);
+    });
+
+    // Periodic tasks
+    setInterval(() => {
+      requestIdleCallback(async () => {
+        try {
+          await Promise.all([
+            tabManager.cleanupInactiveTabs(),
+            tabManager.enforceTabLimits(),
+            connection.cleanupConnections()
+          ]);
+        } catch (error) {
+          logger.error('Periodic task failed', { error: error.message });
+        }
+      }, { timeout: 10000 });
+    }, CONFIG.TIMEOUTS.CLEANUP);
+
+    logger.info('Background coordination initialized');
   } catch (error) {
-    logger.critical('Background initialization failed', { error: error.message });
+    logger.critical('Background coordination setup failed', { error: error.message });
     throw error;
   }
 }
 
-function initializeState() {
-  // Implement if needed: return an object with syncState() and persistState() methods.
-  return {
-    syncState: jest.fn(),
-    persistState: jest.fn()
-  };
-}
+// Just call setupCoordination immediately; MV3 background is a service worker by default.
+setupCoordination().catch(error => {
+  logger.critical('Fatal background error', { error: error.message });
+});
 
-function setupEventListeners() {
-  if (process.env.NODE_ENV === 'test') {
-    if (!browser.runtime) browser.runtime = {};
-    if (!browser.runtime.onStartup) browser.runtime.onStartup = { addListener: jest.fn() };
-    if (!browser.runtime.onSuspend) browser.runtime.onSuspend = { addListener: jest.fn() };
-  }
-
-  browser.runtime.onStartup.addListener(() => initializeState().syncState());
-  browser.runtime.onSuspend.addListener(() => initializeState().persistState());
-  
-  browser.runtime.onMessage.addListener(connection.handleMessage);
-  browser.runtime.onConnect.addListener(connection.handlePort);
-
-  browser.tabs.onUpdated.addListener(tabManager.handleTabUpdate);
-  browser.tabs.onRemoved.addListener(tabManager.handleTabRemove);
-}
-
-function setupPeriodicTasks() {
-  const scheduleSync = () => {
-    requestIdleCallback(async () => {
-      try {
-        await initializeState().syncState();
-      } finally {
-        scheduleSync();
-      }
-    }, { timeout: 10000 });
-  };
-  scheduleSync();
-
-  setInterval(async () => {
-    await tabManager.cleanupInactiveTabs();
-    await tabManager.enforceTabLimits();
-    await connection.cleanupConnections();
-  }, CONFIG.TIMEOUTS.CLEANUP);
-}
-
-// Initialize the background script
-initialize().catch(console.error);
-
-// Export for testing
 export const __testing__ = {
-  initialize,
-  setupEventListeners,
-  setupPeriodicTasks,
-  reset: () => {
-    isInitialized = false;
-  }
+  setupCoordination,
+  tabManager
 };

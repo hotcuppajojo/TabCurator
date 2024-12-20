@@ -3,14 +3,16 @@
  */
 
 import browser from 'webextension-polyfill';
-import stateManager from './stateManager.js'; // Changed from destructured import
-import { MESSAGE_TYPES } from './constants.js'; 
+import stateManager from './stateManager.js';
+import { logger } from './logger.js';
 import {
   TAB_STATES,
   CONFIG,
-  VALIDATION_TYPES
+  VALIDATION_TYPES,
+  BOOKMARK_CONFIG,
+  MESSAGE_TYPES 
 } from './constants.js';
-import { logger } from './logger.js';
+
 
 // Operations defined for tabs
 export const TAB_OPERATIONS = Object.freeze({
@@ -648,33 +650,181 @@ export const __testing__ = {
   }
 };
 
+/**
+ * Tag the tab with the provided tag, bookmark it under the TabCurator folder, and then close it.
+ * @param {number} tabId - The ID of the tab to tag and bookmark.
+ * @param {string} tag - The tag to apply to the tab.
+ */
+export async function tagTabAndBookmark(tabId, tag) {
+  // Get the tab
+  const tab = await getTab(tabId);
+  
+  // Tag the tab by updating its title
+  const originalTitle = tab.title;
+  const taggedTitle = `[${tag}] ${originalTitle}`;
+  await updateTab(tabId, { title: taggedTitle });
+
+  // Find or create the "TabCurator" bookmark folder
+  let folderId;
+  const folders = await browser.bookmarks.search({ title: BOOKMARK_CONFIG.FOLDER_NAME });
+  if (folders.length === 0) {
+    const folder = await browser.bookmarks.create({ title: BOOKMARK_CONFIG.FOLDER_NAME });
+    folderId = folder.id;
+  } else {
+    folderId = folders[0].id;
+  }
+
+  // Bookmark the tab under the TabCurator folder
+  await browser.bookmarks.create({
+    parentId: folderId,
+    title: taggedTitle,
+    url: tab.url
+  });
+
+  // Close the tab
+  await removeTab(tabId);
+
+  logger.info('Tab tagged, bookmarked, and closed', { tabId, tag });
+
+  stateManager.dispatch(
+    stateManager.actions.tabManagement.updateMetadata({
+      tabId,
+      metadata: {
+        tags: [tag],
+        lastTagged: Date.now()
+      }
+    })
+  );
+}
+
+/**
+ * Refactored TabManager as a class
+ */
+export class TabManager {
+  constructor() {
+    // Initialize any class fields if needed
+  }
+
+  async initialize() {
+    logger.info('Tab manager initialized', { time: Date.now() });
+    // ...additional initialization code if needed...
+  }
+
+  async handleTabUpdate(tabId, changeInfo, tab) {
+    try {
+      const updatedTab = await browser.tabs.get(tabId);
+      // ...handle the updated tab...
+    } catch (error) {
+      logger.error('handleTabUpdate failed', { error: error.message, tabId });
+    }
+  }
+
+  async handleTabRemove(tabId) {
+    try {
+      const removedTab = await browser.tabs.get(tabId);
+      // ...handle the removed tab...
+    } catch (error) {
+      logger.error('Failed to handle tab removal', { error: error.message, tabId });
+    }
+  }
+
+  async cleanupInactiveTabs() {
+    // Utilize checkInactiveTabs to clean up
+    await checkInactiveTabs();
+  }
+
+  async enforceTabLimits() {
+    const state = stateManager.getState();
+    const maxTabs = state.settings.maxTabs || 100; // Default if not set
+
+    const allTabs = await browser.tabs.query({});
+    if (allTabs.length <= maxTabs) {
+      // No action needed if within limit
+      return;
+    }
+
+    // We exceed the limit, find the oldest tab
+    const activity = state.tabManagement.activity || {};
+
+    // Sort tabs by last accessed time (oldest first)
+    const sortedTabs = allTabs.sort((a, b) => {
+      const aLast = activity[a.id]?.lastAccessed || 0;
+      const bLast = activity[b.id]?.lastAccessed || 0;
+      return aLast - bLast;
+    });
+
+    const oldestTab = sortedTabs[0];
+    logger.info('Tab limit exceeded, oldest tab identified', {
+      currentCount: allTabs.length,
+      maxTabs,
+      oldestTab: oldestTab.id
+    });
+
+    // Update oldestTab in state so that the popup sees it and shows the prompt
+    stateManager.dispatch(stateManager.actions.tabManagement.updateOldestTab(oldestTab));
+  }
+
+  async cleanup() {
+    // Cleanup resources if any
+  }
+
+  async handleConnectionError(error) {
+    if (error.message.includes('Extension context invalidated')) {
+      logger.warn('Extension context invalidated, attempting recovery');
+      
+      // Wait brief moment before retry
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      try {
+        // Re-initialize connection
+        await this.initialize();
+        
+        // Refresh extension ID
+        const newId = browser.runtime.id;
+        if (!newId) {
+          throw new Error('Failed to initialize: Extension ID not found');
+        }
+        logger.info('Initializing with extension ID:', { newId });
+
+        // Update any stored references
+        await browser.storage.local.set({ extensionId: newId });
+        
+        logger.info('Connection recovered successfully', { newExtensionId: newId });
+        return true;
+      } catch (recoveryError) {
+        logger.error('Connection recovery failed', { error: recoveryError.message });
+        return false;
+      }
+    }
+    return false;
+  }
+
+  async withConnectionRetry(operation) {
+    const maxAttempts = 3;
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      try {
+        return await operation();
+      } catch (error) {
+        attempts++;
+        const isRecovered = await this.handleConnectionError(error);
+        
+        if (!isRecovered && attempts === maxAttempts) {
+          throw error;
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+      }
+    }
+  }
+}
+
+// Export a singleton instance of TabManager
+export const tabManager = new TabManager();
+
 // Only exporting TAB_STATES to avoid confusion since we rely on store/actions for everything else
 export {
   TAB_STATES
 };
 
-export function createTabManager() {
-  return {
-    initialize: async () => {
-      logger.info('Tab manager initialized', { time: Date.now() });
-      // ...additional initialization code if needed...
-    },
-    handleTabUpdate: async (tabId, changeInfo, tab) => {
-      const updatedTab = await browser.tabs.get(tabId);
-      // ...handle the updated tab...
-    },
-    handleTabRemove: async (tabId) => {
-      const removedTab = await browser.tabs.get(tabId);
-      // ...handle the removed tab...
-    },
-    cleanupInactiveTabs: async () => {
-      // Cleanup inactive tabs
-    },
-    enforceTabLimits: async () => {
-      // Enforce tab limits
-    },
-    cleanup: async () => {
-      // Cleanup resources
-    }
-  };
-}

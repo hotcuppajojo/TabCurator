@@ -1,6 +1,17 @@
 // utils/logger.js
-import { ERROR_CATEGORIES, TELEMETRY_CONFIG, CONFIG, LOG_LEVELS, LOG_CATEGORIES } from './constants.js';
+import { ERROR_CATEGORIES, TELEMETRY_CONFIG, CONFIG, LOG_LEVELS, LOG_CATEGORIES, MESSAGE_TYPES } from './constants.js';
 import browser from 'webextension-polyfill';
+
+// Remove local LOG_LEVELS definition as it's now imported from constants.js
+if (!browser.storage || !browser.storage.local) {
+  browser.storage = {
+    local: {
+      get: jest.fn().mockResolvedValue({}),
+      set: jest.fn().mockResolvedValue(),
+      remove: jest.fn().mockResolvedValue(), // Added remove function
+    },
+  };
+}
 
 // Add default logging preferences
 const DEFAULT_PREFERENCES = Object.freeze({
@@ -571,3 +582,9 @@ class Logger {
 }
 
 export const logger = new Logger();
+
+browser.runtime.onMessage = {
+  addListener: jest.fn((callback) => {
+    callback({ type: MESSAGE_TYPES.STATE_SYNC, payload: {} });
+  })
+};

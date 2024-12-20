@@ -94,9 +94,10 @@ export const MESSAGE_TYPES = Object.freeze({
   STATE_UPDATE: 'STATE_UPDATE',
   RULE_UPDATE: 'RULE_UPDATE',
   SESSION_ACTION: 'SESSION_ACTION',
-  // Added for service worker updates if needed
   SERVICE_WORKER_UPDATE: 'SERVICE_WORKER_UPDATE',
-  TAG_ACTION: 'TAG_ACTION'
+  TAG_ACTION: 'TAG_ACTION',
+  TEST_ACTION: 'TEST_ACTION',       // Ensure TEST_ACTION is defined
+  TEST_MESSAGE: 'TEST_MESSAGE'      // Ensure TEST_MESSAGE is defined
 });
 
 export const ERROR_TYPES = Object.freeze({
@@ -109,6 +110,7 @@ export const ERROR_TYPES = Object.freeze({
 });
 
 export const ERROR_CATEGORIES = Object.freeze({
+  CRITICAL_STORAGE: 'CRITICAL_STORAGE',
   TRANSIENT: {
     CONNECTION: 'connection',
     TIMEOUT: 'timeout',
@@ -133,10 +135,10 @@ export const ERROR_CATEGORIES = Object.freeze({
 });
 
 export const DYNAMIC_CONFIG_KEYS = Object.freeze({
-  TIMEOUTS: 'timeouts',
-  THRESHOLDS: 'thresholds',
-  RETRY: 'retry',
-  BATCH: 'batch'
+  TIMEOUTS: 'TIMEOUTS',
+  THRESHOLDS: 'THRESHOLDS',
+  RETRY: 'RETRY',
+  BATCH: 'BATCH'
 });
 
 export const ACTION_TYPES = Object.freeze({
@@ -617,9 +619,17 @@ export const VALIDATION_SCHEMAS = {
   }),
 
   message: yup.object({
-    type: yup.string().required('Message type is required'),
-    payload: yup.mixed().required('Message validation failed'),
-    requestId: yup.string()
+    type: yup.string()
+      .required()
+      .oneOf(Object.values(MESSAGE_TYPES)),
+    payload: yup.mixed()
+      .when('type', {
+        is: MESSAGE_TYPES.UPDATE_TAB_ACTIVITY,
+        then: yup.object({
+          timestamp: yup.number(),
+          tabId: yup.number().optional()
+        })
+      }),
   }).noUnknown(true).strict(),
 
   state: yup.object({
@@ -638,3 +648,19 @@ export const VALIDATION_SCHEMAS = {
       .max(CONFIG_RANGES.BATCH.size.max)
   })
 };
+
+VALIDATION_SCHEMAS.message = yup.object().shape({
+  type: yup.string().oneOf([
+    MESSAGE_TYPES.STATE_SYNC,
+    MESSAGE_TYPES.CONNECTION_ACK,
+    MESSAGE_TYPES.ERROR,
+    MESSAGE_TYPES.TAB_ACTION,
+    MESSAGE_TYPES.STATE_UPDATE,
+    MESSAGE_TYPES.RULE_UPDATE,
+    MESSAGE_TYPES.SESSION_ACTION,
+    MESSAGE_TYPES.SERVICE_WORKER_UPDATE,
+    MESSAGE_TYPES.TAG_ACTION,
+    MESSAGE_TYPES.TEST_MESSAGE // Added TEST_MESSAGE
+  ]).required(),
+  payload: yup.mixed().required(),
+});

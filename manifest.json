@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TabCurator",
-  "version": "0.1",
-  "description": "A browser extension for managing and organizing tabs.",
+  "version": "1.0.0",
+  "description": "Advanced tab management with intelligent grouping and optimization",
   "permissions": [
     "tabs",
     "storage",
@@ -41,7 +41,6 @@
     "128": "icons/icon128.png"
   },
   "options_ui": {
-    "scripts": "vendor/browser-polyfill.js",
     "page": "options/options.html",
     "open_in_tab": true
   },
@@ -55,7 +54,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; default-src 'self'",
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'self'",
     "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self'"
   },
   "web_accessible_resources": [
@@ -80,11 +79,5 @@
     "https://*/*",
     "http://*/*",
     "<all_urls>"
-  ],
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "{your-extension-id}@example.com",
-      "strict_min_version": "91.0"
-    }
-  }
+  ]
 }

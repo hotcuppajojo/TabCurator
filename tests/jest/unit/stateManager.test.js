@@ -17,7 +17,7 @@ describe('State Manager', () => {
       const validState = {
         tabs: [{
           id: 1,
-          url: 'https://example.com',
+          url: 'https://example.com', // Add required URL
           title: 'Test Tab',
           active: true
         }]
@@ -31,7 +31,7 @@ describe('State Manager', () => {
     test('should throw error for invalid state schema', () => {
       const invalidState = {
         tabs: [{
-          // Missing required fields id and url
+          id: 1, // Add id but missing url
           title: 'Invalid Tab'
         }]
       };

@@ -6,6 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
 import os from 'os';
+import { getExtensionId } from '../../utils/tabManager.js';
 
 /**
  * Sets up a persistent browser context with the extension loaded.
@@ -41,9 +42,7 @@ export async function setupBrowserContext() {
   page.on('console', msg => console.log('Page log:', msg.text()));
   page.on('pageerror', err => console.error('Page error:', err));
 
-  const extensionId = 'nfojpoonjbnmklchadfhaihdcgfgkdbo'; // Ensure this matches your actual extension ID
-
-  // Check a test page to confirm the extension is accessible
+  const extensionId = await getExtensionId();
   const testUrl = `chrome-extension://${extensionId}/test/test.html`;
   console.log('Attempting to load test page:', testUrl);
 
