@@ -1,17 +1,4 @@
 // utils/connectionManager.js
-
-import browser from 'webextension-polyfill';
-import { MESSAGE_TYPES, PERMISSIONS, ERROR_TYPES, CONFIG, ERROR_CATEGORIES, DYNAMIC_CONFIG_KEYS, CONFIG_SCHEMAS, TELEMETRY_CONFIG, STORAGE_CONFIG } from './constants.js';
-import { store } from './stateManager.js';
-import { 
-  getTab, 
-  updateTab, 
-  discardTab 
-} from './tabManager.js';
-import Ajv from 'ajv';
-import deepEqual from 'fast-deep-equal';
-import { logger } from './logger.js';
-
 /**
  * @fileoverview Enhanced Connection Manager with performance monitoring,
  * dedicated message handlers, and improved service worker integration.
@@ -19,10 +6,32 @@ import { logger } from './logger.js';
  * Key responsibilities:
  * - Message validation and routing
  * - Connection state management
- * - Permission handling
  * - Batch processing
  * - Service worker registration
  */
+
+import browser from 'webextension-polyfill';
+import {
+  MESSAGE_TYPES,
+  CONFIG,
+  ERROR_CATEGORIES,
+  DYNAMIC_CONFIG_KEYS,
+  CONFIG_SCHEMAS,
+  TELEMETRY_CONFIG,
+  STORAGE_CONFIG,
+  TAB_OPERATIONS,
+  TAG_OPERATIONS,
+  TAB_STATES
+} from './constants.js';
+import { store } from './stateManager.js';
+import {
+  getTab,
+  updateTab,
+  discardTab
+} from './tabManager.js';
+import Ajv from 'ajv';
+import deepEqual from 'fast-deep-equal';
+import { logger } from './logger.js';
 
 // Message schemas
 const messageSchema = {
@@ -45,6 +54,23 @@ const PERFORMANCE_THRESHOLDS = {
   BATCH_PROCESSING: 200
 };
 
+// Ensure RATE_LIMITS is defined
+if (!CONFIG_SCHEMAS.RATE_LIMITS) {
+  CONFIG_SCHEMAS.RATE_LIMITS = {
+    API_CALLS: {
+      WINDOW_MS: 60000,
+      MAX_REQUESTS: 100
+    }
+  };
+}
+
+// Ensure METRICS config if not present
+if (!CONFIG.METRICS) {
+  CONFIG.METRICS = {
+    REPORTING_INTERVAL: 300000 // 5 minutes
+  };
+}
+
 class ConnectionManager {
   constructor() {
     this.connections = new Map();
@@ -63,31 +89,23 @@ class ConnectionManager {
     this.lastCleanup = Date.now();
     this.cleanupInterval = CONFIG.TIMEOUTS.CLEANUP;
 
-    // Add dynamic configuration storage
     this.dynamicConfig = new Map();
     this._initializeDynamicConfig();
 
-    // Start metrics reporting
     this._setupMetricsReporting();
-
-    // Add rate limiting trackers
     this.apiCalls = new Map();
     this.configValidators = new Map();
     this.initializeValidators();
     
-    // Add storage quota tracking
     this.storageQuota = CONFIG.STORAGE.QUOTA.DEFAULT_BYTES;
     this.metricsSize = 0;
 
-    // Add telemetry handling
     this.telemetry = new Map();
     this.unsyncedChanges = new Map();
-    this.currentOperations = new Set();
+    this.currentOperations = new Map();
     
-    // Initialize dynamic storage quota
     this._initializeStorageQuota();
 
-    // Add connection metrics tracking
     this.connectionMetrics = {
       successful: 0,
       failed: 0,
@@ -96,32 +114,33 @@ class ConnectionManager {
       lastCleanup: Date.now()
     };
 
-    // Track validation failures
     this.validationMetrics = {
       failures: new Map(),
       lastReset: Date.now()
     };
+
+    this.isShuttingDown = false;
+
+    this._metricsInterval = setInterval(() => this._reportMetrics(), CONFIG.METRICS.REPORTING_INTERVAL);
+    this._cleanupInterval = setInterval(() => this._cleanupConnections(), this.cleanupInterval);
+
+    this.buffer = new Map();
+    this.flushThreshold = CONFIG.BATCH.FLUSH_SIZE;
+    this.batchSize = CONFIG.BATCH.DEFAULT?.SIZE || 10;
+    this.timeout = CONFIG.BATCH.DEFAULT?.TIMEOUT || 5000;
   }
 
-  /**
-   * Initialize dynamic configuration with defaults from CONFIG
-   * @private
-   */
   async _initializeDynamicConfig() {
     try {
-      // Load any stored configuration
       const stored = await browser.storage.local.get('dynamicConfig');
-      
-      // Initialize with defaults
       this.dynamicConfig = new Map(Object.entries({
         [DYNAMIC_CONFIG_KEYS.TIMEOUTS]: CONFIG.TIMEOUTS,
-        [DYNAMIC_CONFIG_KEYS.THRESHOLDS]: CONFIG.METRICS.THRESHOLDS,
+        [DYNAMIC_CONFIG_KEYS.THRESHOLDS]: CONFIG.THRESHOLDS,
         [DYNAMIC_CONFIG_KEYS.RETRY]: CONFIG.RETRY,
-        [DYNAMIC_CONFIG_KEYS.BATCH]: CONFIG.QUEUE,
-        ...stored.dynamicConfig
+        [DYNAMIC_CONFIG_KEYS.BATCH]: CONFIG.BATCH,
+        ...(stored.dynamicConfig || {})
       }));
 
-      // Set up storage change listener
       browser.storage.onChanged.addListener((changes) => {
         if (changes.dynamicConfig) {
           this._updateDynamicConfig(changes.dynamicConfig.newValue);
@@ -136,36 +155,25 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Initialize configuration validators
-   * @private
-   */
   initializeValidators() {
     Object.entries(CONFIG_SCHEMAS).forEach(([key, schema]) => {
       this.configValidators.set(key, ajv.compile(schema));
     });
   }
 
-  /**
-   * Update dynamic configuration
-   * @param {string} key - Configuration key
-   * @param {any} value - New configuration value
-   */
   async updateConfig(key, value) {
     try {
       this._validateConfig(key, value);
-      if (!DYNAMIC_CONFIG_KEYS[key]) {
+      if (!Object.values(DYNAMIC_CONFIG_KEYS).includes(key)) {
         throw new Error(`Invalid configuration key: ${key}`);
       }
 
       this.dynamicConfig.set(key, value);
       
-      // Persist changes
       await browser.storage.local.set({
         dynamicConfig: Object.fromEntries(this.dynamicConfig)
       });
 
-      // Log configuration change
       console.log(`Configuration updated - ${key}:`, value);
     } catch (error) {
       this._logError(error, {
@@ -176,10 +184,6 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Enhanced error logging with context
-   * @private
-   */
   _logError(error, context = {}) {
     const errorCategory = this._categorizeError(error);
     const errorLog = {
@@ -196,14 +200,12 @@ class ConnectionManager {
       }
     };
 
-    // Log based on severity
     if (errorLog.severity >= ERROR_CATEGORIES.SEVERITY.HIGH) {
       console.error('Critical error:', errorLog);
     } else {
       console.warn('Non-critical error:', errorLog);
     }
 
-    // Store error metrics with categorization
     const errorKey = `${errorLog.category}_${errorLog.type}`;
     const currentErrors = this.metrics.errors.get(errorKey) || { count: 0, samples: [] };
     
@@ -217,10 +219,6 @@ class ConnectionManager {
     return errorLog;
   }
 
-  /**
-   * Categorize error types
-   * @private
-   */
   _categorizeError(error) {
     if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
       return ERROR_CATEGORIES.TRANSIENT.TIMEOUT;
@@ -229,6 +227,7 @@ class ConnectionManager {
       return ERROR_CATEGORIES.TRANSIENT.RATE_LIMIT;
     }
     if (error.message.includes('permission')) {
+      // Permission errors handled by logger directly, no constants needed
       return ERROR_CATEGORIES.CRITICAL.PERMISSION;
     }
     if (error.message.includes('authentication') || error.message.includes('unauthorized')) {
@@ -244,31 +243,18 @@ class ConnectionManager {
       return ERROR_CATEGORIES.CRITICAL.VALIDATION;
     }
     if (error.message.includes('storage')) {
-      return ERROR_CATEGORIES.CRITICAL.PERSISTENCE;
+      return ERROR_CATEGORIES.CRITICAL.STATE;
     }
     if (error.message.includes('format')) {
-      return ERROR_CATEGORIES.CRITICAL.FORMAT;
+      return ERROR_CATEGORIES.CRITICAL.STATE;
     }
-
-    return error.name === 'NetworkError' ? 
-      ERROR_CATEGORIES.TRANSIENT.NETWORK : 
-      ERROR_CATEGORIES.TRANSIENT.UNKNOWN;
+    return error.name === 'NetworkError' ? ERROR_CATEGORIES.TRANSIENT.CONNECTION : ERROR_CATEGORIES.TRANSIENT.UNKNOWN;
   }
 
-  /**
-   * Metrics reporting setup
-   * @private
-   */
   _setupMetricsReporting() {
-    setInterval(() => {
-      this._reportMetrics();
-    }, CONFIG.METRICS.REPORTING_INTERVAL);
+    // Handled by constructor intervals
   }
 
-  /**
-   * Aggregate and report metrics
-   * @private
-   */
   async _reportMetrics() {
     const now = Date.now();
     const report = {
@@ -280,17 +266,12 @@ class ConnectionManager {
       },
       performance: Object.fromEntries(this.metrics.performance),
       errors: Object.fromEntries(this.metrics.errors),
-      memory: process.memoryUsage()
+      memory: typeof process !== 'undefined' && process.memoryUsage ? process.memoryUsage() : {}
     };
 
     try {
-      // Log metrics
       console.log('Performance report:', report);
-
-      // Store metrics in extension storage for debugging
       await this._storeMetrics(report);
-
-      // Clean up old metrics
       this._cleanupMetrics();
       this.metrics.lastReport = now;
     } catch (error) {
@@ -298,22 +279,16 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Clean up old metrics data
-   * @private
-   */
   _cleanupMetrics() {
     const now = Date.now();
-    const maxAge = CONFIG.METRICS.REPORTING_INTERVAL * 12; // Keep 1 hour of data
+    const maxAge = CONFIG.METRICS.REPORTING_INTERVAL * 12;
 
-    // Clean up performance metrics
     for (const [key, data] of this.metrics.performance) {
-      if (now - data.lastUpdated > maxAge) {
+      if (now - (data.samples[0]?.timestamp || now) > maxAge) {
         this.metrics.performance.delete(key);
       }
     }
 
-    // Clean up error metrics
     for (const [key, data] of this.metrics.errors) {
       if (now - data.lastOccurrence > maxAge) {
         this.metrics.errors.delete(key);
@@ -321,12 +296,16 @@ class ConnectionManager {
     }
   }
 
-  async connect() {
+  async connect(options = {}) {
     const connectionId = crypto.randomUUID();
     const startTime = performance.now();
     
     try {
-      const port = browser.runtime.connect({ name: 'tabActivity' });
+      const port = browser.runtime.connect({ 
+        name: 'tabActivity',
+        batchSize: options.batchSize || this.batchSize,
+        timeout: options.timeout || this.timeout
+      });
       
       const connection = await new Promise((resolve, reject) => {
         const timeoutId = setTimeout(() => {
@@ -344,7 +323,6 @@ class ConnectionManager {
             clearTimeout(timeoutId);
             const duration = performance.now() - startTime;
             
-            // Track successful connection
             this.connectionMetrics.successful++;
             this.connectionMetrics.activeConnections.set(connectionId, {
               established: Date.now(),
@@ -353,7 +331,6 @@ class ConnectionManager {
               lastActivity: Date.now()
             });
 
-            // Log connection performance
             logger.logPerformance('connectionEstablish', duration, {
               connectionId,
               successful: true
@@ -370,6 +347,7 @@ class ConnectionManager {
         });
       });
 
+      this.connections.set(connectionId, connection.port);
       return connectionId;
     } catch (error) {
       this.connectionMetrics.failed++;
@@ -383,33 +361,26 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Implements exponential backoff with jitter for retries
-   * @private
-   */
-  async _retryWithBackoff(operation) {
+  async _retryWithBackoff(operation, options) {
     const retryConfig = this.getConfig(DYNAMIC_CONFIG_KEYS.RETRY);
+    const maxAttempts = options?.maxAttempts || retryConfig.MAX_ATTEMPTS;
+    const delays = retryConfig.DELAYS;
     let attempt = 0;
     
-    while (attempt < retryConfig.MAX_ATTEMPTS) {
+    while (attempt < maxAttempts) {
       try {
         return await operation();
       } catch (error) {
-        if (attempt === retryConfig.MAX_ATTEMPTS - 1) {
+        if (attempt === maxAttempts - 1) {
           throw error;
         }
-        
-        const delay = retryConfig.DELAYS[attempt] * (0.8 + Math.random() * 0.4);
+        const delay = delays[Math.min(attempt, delays.length - 1)] * (0.8 + Math.random() * 0.4);
         await new Promise(resolve => setTimeout(resolve, delay));
         attempt++;
       }
     }
   }
 
-  /**
-   * Validates message structure and content
-   * @private
-   */
   async validateMessage(message) {
     const startTime = performance.now();
     try {
@@ -422,10 +393,7 @@ class ConnectionManager {
           severity: ERROR_CATEGORIES.SEVERITY.HIGH
         };
         
-        // Log validation failure
         logger.error('Message validation failed', errorContext);
-        
-        // Track validation failures
         const failureType = errors[0]?.keyword || 'unknown';
         const currentCount = this.validationMetrics.failures.get(failureType) || 0;
         this.validationMetrics.failures.set(failureType, currentCount + 1);
@@ -456,6 +424,7 @@ class ConnectionManager {
       try {
         connection.port.disconnect();
         this.connectionMetrics.activeConnections.delete(connectionId);
+        this.connections.delete(connectionId);
         
         const duration = performance.now() - startTime;
         logger.logPerformance('connectionTerminate', duration, {
@@ -473,7 +442,7 @@ class ConnectionManager {
     }
   }
 
-  _handleDisconnect(connectionId, startTime) {
+  _handleDisconnect(connectionId) {
     const connection = this.connectionMetrics.activeConnections.get(connectionId);
     if (connection) {
       const duration = Date.now() - connection.established;
@@ -483,13 +452,10 @@ class ConnectionManager {
         messageCount: connection.messageCount
       });
       this.connectionMetrics.activeConnections.delete(connectionId);
+      this.connections.delete(connectionId);
     }
   }
 
-  /**
-   * Monitors performance of async operations
-   * @private
-   */
   async _measurePerformance(operation, type) {
     const startTime = performance.now();
     try {
@@ -500,29 +466,28 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Logs performance metrics
-   * @private
-   */
   _logPerformance(type, duration) {
     const threshold = PERFORMANCE_THRESHOLDS[type] || 50;
     if (duration > threshold) {
       console.warn(`Performance warning: ${type} took ${duration.toFixed(2)}ms`);
-      this.metrics.set(type, {
-        count: (this.metrics.get(type)?.count || 0) + 1,
-        avgDuration: (this.metrics.get(type)?.avgDuration || 0) * 0.9 + duration * 0.1
+      const existing = this.metrics.performance.get(type) || { count: 0, totalDuration: 0, failures: 0, samples: [] };
+      existing.count++;
+      existing.totalDuration += duration;
+      existing.samples.unshift({
+        type,
+        duration,
+        timestamp: Date.now(),
+        success: true
       });
+      existing.samples = existing.samples.slice(0, 10);
+      this.metrics.performance.set(type, existing);
     }
   }
 
-  /**
-   * Dedicated message handlers for different message types
-   * @private
-   */
   _messageHandlers = {
     [MESSAGE_TYPES.STATE_SYNC]: async (payload) => {
       return this._measurePerformance(
-        async () => this.syncState(payload),
+        async () => this.syncState(),
         'STATE_SYNC'
       );
     },
@@ -542,9 +507,6 @@ class ConnectionManager {
     }
   };
 
-  /**
-   * Enhanced message handler with performance monitoring
-   */
   async handleMessage(message, sender) {
     await this.validateMessage(message);
     
@@ -559,26 +521,40 @@ class ConnectionManager {
     );
   }
 
-  /**
-   * Enhanced state synchronization with diff checking
-   */
   async syncState() {
-    const currentState = store.getState();
-    const stateUpdates = this._getStateDiff(currentState);
-    
-    if (Object.keys(stateUpdates).length > 0) {
-      await this.broadcastMessage({
-        type: MESSAGE_TYPES.STATE_SYNC,
-        payload: stateUpdates
-      });
-      this.lastStateSync = currentState;
+    const retryOptions = {
+      maxAttempts: STORAGE_CONFIG.SYNC.MAX_RETRIES,
+      backoff: STORAGE_CONFIG.SYNC.BACKOFF_MS
+    };
+    let stateUpdates;
+
+    try {
+      await this._trackPerformance(
+        async () => {
+          const currentState = store.getState();
+          stateUpdates = this._getStateDiff(currentState);
+          
+          if (Object.keys(stateUpdates).length > 0) {
+            await this._retryWithBackoff(
+              () => this.broadcastMessage({
+                type: MESSAGE_TYPES.STATE_SYNC,
+                payload: stateUpdates
+              }),
+              retryOptions
+            );
+            this.lastStateSync = currentState;
+          }
+        },
+        'STATE_SYNC'
+      );
+
+      this.unsyncedChanges.clear();
+    } catch (error) {
+      this._storeUnsyncedChanges(stateUpdates);
+      throw error;
     }
   }
 
-  /**
-   * Computes differential state updates
-   * @private
-   */
   _getStateDiff(currentState) {
     if (!this.lastStateSync) return currentState;
 
@@ -591,16 +567,13 @@ class ConnectionManager {
     return updates;
   }
 
-  /**
-   * Broadcasts message to all active connections
-   */
   async broadcastMessage(message) {
     await this.validateMessage(message);
     const errors = [];
 
-    for (const [id, connection] of this.connections) {
+    for (const [id, connectionPort] of this.connections) {
       try {
-        await this._sendWithRetry(connection, message);
+        await this._sendWithRetry(connectionPort, message);
       } catch (error) {
         errors.push({ connectionId: id, error });
         this.connections.delete(id);
@@ -615,7 +588,6 @@ class ConnectionManager {
     }
   }
 
-  // Add alarm management methods
   async createAlarm(name, alarmInfo) {
     if (!browser.alarms) {
       throw new Error('Alarms API not available');
@@ -630,10 +602,6 @@ class ConnectionManager {
     browser.alarms.onAlarm.addListener(callback);
   }
 
-  /**
-   * Periodic cleanup of stale connections
-   * @private
-   */
   async _cleanupConnections() {
     const now = Date.now();
     if (now - this.connectionMetrics.lastCleanup < CONFIG.TIMEOUTS.CLEANUP) {
@@ -661,18 +629,14 @@ class ConnectionManager {
     this.connectionMetrics.lastCleanup = now;
   }
 
-  /**
-   * Enhanced service worker registration with update handling
-   */
   async registerServiceWorker(scriptURL, options = {}) {
-    if (!('serviceWorker' in navigator)) {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
       throw new Error('Service Worker API not available');
     }
 
     try {
       const registration = await navigator.serviceWorker.register(scriptURL, options);
 
-      // Handle updates
       registration.addEventListener('updatefound', () => {
         const newWorker = registration.installing;
         newWorker.addEventListener('statechange', () => {
@@ -685,7 +649,6 @@ class ConnectionManager {
         });
       });
 
-      // Handle browser-specific quirks
       if (navigator.userAgent.includes('Safari')) {
         await this._handleSafariRegistration(registration);
       }
@@ -697,53 +660,8 @@ class ConnectionManager {
     }
   }
 
-  // Add comprehensive permission management
-  async requestPermissions(permissions) {
-    try {
-      const result = await browser.permissions.request({
-        permissions: Array.isArray(permissions) ? permissions : [permissions]
-      });
-      
-      if (!result) {
-        throw new Error(`Permission denied: ${permissions.join(', ')}`);
-      }
-      
-      store.dispatch({
-        type: 'PERMISSIONS_UPDATED',
-        payload: { permissions, granted: true }
-      });
-      
-      return result;
-    } catch (error) {
-      store.dispatch({
-        type: 'PERMISSIONS_ERROR',
-        payload: { permissions, error: error.message }
-      });
-      throw error;
-    }
-  }
-
-  async removePermissions(permissions) {
-    try {
-      await browser.permissions.remove({
-        permissions: Array.isArray(permissions) ? permissions : [permissions]
-      });
-      
-      store.dispatch({
-        type: 'PERMISSIONS_UPDATED',
-        payload: { permissions, granted: false }
-      });
-    } catch (error) {
-      console.error('Error removing permissions:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Enhanced batch processing with performance monitoring
-   */
   async processBatchMessages(messages, { 
-    batchSize = CONFIG.QUEUE.BATCH_SIZE,
+    batchSize = CONFIG.BATCH.DEFAULT_SIZE,
     onProgress
   } = {}) {
     return this._measurePerformance(
@@ -771,152 +689,25 @@ class ConnectionManager {
     );
   }
 
-  /**
-   * Graceful shutdown implementation
-   */
   async shutdown() {
     console.log('Initiating graceful shutdown...');
-    
     try {
-      // Stop metrics reporting
-      clearInterval(this._metricsInterval);
+      this.isShuttingDown = true;
 
-      // Clean up all connections
-      const disconnectPromises = Array.from(this.connections.entries())
-        .map(async ([id, connection]) => {
-          try {
-            await this.disconnect(id);
-          } catch (error) {
-            this._logError(error, { type: 'SHUTDOWN', connectionId: id });
-          }
-        });
-
-      await Promise.allSettled(disconnectPromises);
-
-      // Clear internal state
-      this.connections.clear();
-      this.messageQueue = [];
-      this.metrics = {
-        errors: new Map(),
-        performance: new Map(),
-        connections: new Map(),
-        lastReport: Date.now()
-      };
-
-      console.log('Graceful shutdown completed.');
-    } catch (error) {
-      this._logError(error, { type: 'SHUTDOWN' });
-      throw error;
-    }
-  }
-
-  /**
-   * Get current configuration value
-   * @param {string} key - Configuration key
-   * @returns {any} Configuration value
-   */
-  getConfig(key) {
-    return this.dynamicConfig.get(key) || CONFIG[key];
-  }
-
-  /**
-   * Enhanced configuration validation
-   * @private
-   */
-  _validateConfig(key, value) {
-    const validator = this.configValidators.get(key);
-    if (!validator) {
-      throw new Error(`No validator found for config key: ${key}`);
-    }
-
-    if (!validator(value)) {
-      throw new Error(`Invalid configuration: ${JSON.stringify(validator.errors)}`);
-    }
-
-    // Ensure no overlap with default CONFIG
-    if (CONFIG[key] && deepEqual(CONFIG[key], value)) {
-      throw new Error(`Configuration ${key} matches default, use default instead`);
-    }
-
-    return true;
-  }
-
-  /**
-   * Rate limiting check
-   * @private
-   */
-  _checkRateLimit(type) {
-    const limits = CONFIG_SCHEMAS.RATE_LIMITS[type];
-    if (!limits) return true;
-
-    const now = Date.now();
-    const calls = this.apiCalls.get(type) || [];
-    
-    // Clean up old entries
-    const recentCalls = calls.filter(time => now - time < limits.WINDOW_MS);
-    this.apiCalls.set(type, recentCalls);
-
-    if (recentCalls.length >= limits.MAX_REQUESTS) {
-      throw new Error(`Rate limit exceeded for ${type}`);
-    }
-
-    recentCalls.push(now);
-    return true;
-  }
-
-  /**
-   * Enhanced metrics storage with quota management
-   * @private
-   */
-  async _storeMetrics(metrics) {
-    const serialized = JSON.stringify(metrics);
-    const size = new Blob([serialized]).size;
-
-    if (this.metricsSize + size > this.storageQuota) {
-      await this._pruneMetrics(size);
-    }
-
-    this.metricsSize += size;
-    return browser.storage.local.set({
-      [`metrics_${Date.now()}`]: metrics
-    });
-  }
-
-  /**
-   * Prune old metrics to free up space
-   * @private
-   */
-  async _pruneMetrics(requiredSpace) {
-    const allMetrics = await browser.storage.local.get(null);
-    const metricEntries = Object.entries(allMetrics)
-      .filter(([key]) => key.startsWith('metrics_'))
-      .sort(([a], [b]) => parseInt(b.split('_')[1]) - parseInt(a.split('_')[1]));
-
-    let freedSpace = 0;
-    const keysToRemove = [];
-
-    for (const [key, value] of metricEntries) {
-      const size = new Blob([JSON.stringify(value)]).size;
-      freedSpace += size;
-      keysToRemove.push(key);
-      this.metricsSize -= size;
-
-      if (freedSpace >= requiredSpace) break;
-    }
-
-    await browser.storage.local.remove(keysToRemove);
-  }
-
-  /**
-   * Enhanced shutdown with state persistence
-   */
-  async shutdown() {
-    console.log('Initiating graceful shutdown...');
-    
-    try {
       // Stop all recurring tasks
       clearInterval(this._metricsInterval);
       clearInterval(this._cleanupInterval);
+
+      // Interrupt ongoing operations
+      await this._interruptOperations();
+
+      // Attempt to sync pending changes
+      await this._syncPendingChanges();
+
+      // Cleanup connections
+      await Promise.allSettled(
+        Array.from(this.connections.keys()).map(id => this.disconnect(id))
+      );
 
       // Save current state
       const shutdownState = {
@@ -929,16 +720,7 @@ class ConnectionManager {
         dynamicConfig: Array.from(this.dynamicConfig.entries())
       };
 
-      // Persist shutdown state
-      await browser.storage.local.set({
-        ['shutdown_state']: shutdownState
-      });
-
-      // Cleanup connections
-      await Promise.allSettled(
-        Array.from(this.connections.entries())
-          .map(async ([id]) => this.disconnect(id))
-      );
+      await browser.storage.local.set({ ['shutdown_state']: shutdownState });
 
       // Clear internal state
       this._resetInternalState();
@@ -953,24 +735,16 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Recover from unexpected shutdown
-   */
   async recoverFromCrash() {
     try {
       const { shutdown_state } = await browser.storage.local.get('shutdown_state');
       
       if (shutdown_state) {
-        // Restore dynamic configuration
         this.dynamicConfig = new Map(shutdown_state.dynamicConfig);
-        
-        // Restore metrics
         this.metrics.performance = new Map(shutdown_state.metrics.performance);
         this.metrics.errors = new Map(shutdown_state.metrics.errors);
         
-        // Clean up old shutdown state
         await browser.storage.local.remove('shutdown_state');
-        
         console.log('Recovered from previous shutdown');
       }
     } catch (error) {
@@ -981,20 +755,16 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Initialize dynamic storage quota management
-   * @private
-   */
   async _initializeStorageQuota() {
     try {
       const { quota } = await navigator.storage.estimate();
       const availableQuota = Math.min(
         STORAGE_CONFIG.QUOTA.MAX_BYTES,
-        Math.max(STORAGE_CONFIG.QUOTA.MIN_BYTES, quota * 0.1) // Use 10% of available quota
+        Math.max(STORAGE_CONFIG.QUOTA.MIN_BYTES, quota * 0.1)
       );
 
       this.storageQuota = availableQuota;
-      this._monitorStorageUsage();
+      await this._monitorStorageUsage();
     } catch (error) {
       this._logError(error, {
         type: 'STORAGE_QUOTA_INIT',
@@ -1004,10 +774,6 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Enhanced performance tracking per operation type
-   * @private
-   */
   async _trackPerformance(operation, type, context = {}) {
     const start = performance.now();
     const metric = {
@@ -1031,12 +797,8 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Record detailed performance metrics
-   * @private
-   */
   _recordMetric(metric) {
-    const { type, context, duration, success } = metric;
+    const { type, duration, success } = metric;
     const existing = this.metrics.performance.get(type) || {
       count: 0,
       totalDuration: 0,
@@ -1048,12 +810,10 @@ class ConnectionManager {
     existing.totalDuration += duration;
     if (!success) existing.failures++;
     existing.samples.unshift(metric);
-    existing.samples = existing.samples.slice(0, 10); // Keep last 10 samples
-
+    existing.samples = existing.samples.slice(0, 10);
     this.metrics.performance.set(type, existing);
 
-    // Send to telemetry if threshold exceeded
-    if (duration > CONFIG.METRICS.THRESHOLDS[type]) {
+    if (duration > CONFIG.THRESHOLDS[type]) {
       this._sendTelemetry({
         ...metric,
         avgDuration: existing.totalDuration / existing.count,
@@ -1062,16 +822,11 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Send telemetry data to configured providers
-   * @private
-   */
   async _sendTelemetry(data) {
     try {
       const providers = await this._getEnabledTelemetryProviders();
-      
       await Promise.allSettled(
-        providers.map(provider => 
+        providers.map(provider =>
           this._sendToProvider(provider, {
             ...data,
             timestamp: Date.now(),
@@ -1085,53 +840,11 @@ class ConnectionManager {
     }
   }
 
-  /**
-   * Enhanced state synchronization with retries
-   */
-  async syncState() {
-    const retryOptions = {
-      maxAttempts: STORAGE_CONFIG.SYNC.MAX_RETRIES,
-      backoff: STORAGE_CONFIG.SYNC.BACKOFF_MS
-    };
-
-    try {
-      await this._trackPerformance(
-        async () => {
-          const currentState = store.getState();
-          const stateUpdates = this._getStateDiff(currentState);
-          
-          if (Object.keys(stateUpdates).length > 0) {
-            await this._retryWithBackoff(
-              () => this.broadcastMessage({
-                type: MESSAGE_TYPES.STATE_SYNC,
-                payload: stateUpdates
-              }),
-              retryOptions
-            );
-            this.lastStateSync = currentState;
-          }
-        },
-        'STATE_SYNC'
-      );
-
-      // Clear synced changes
-      this.unsyncedChanges.clear();
-    } catch (error) {
-      // Store unsynced changes for retry
-      this._storeUnsyncedChanges(stateUpdates);
-      throw error;
-    }
-  }
-
-  /**
-   * Store unsynced changes for later retry
-   * @private
-   */
-  _storeUnsyncedChanges(changes) {
+  async _storeUnsyncedChanges(changes) {
     if (this.unsyncedChanges.size >= CONFIG.THRESHOLDS.SYNC_QUEUE) {
       this._sendTelemetry({
         type: 'SYNC_QUEUE_FULL',
-        severity: TELEMETRY_CONFIG.LEVELS.WARN,
+        severity: TELEMETRY_CONFIG.SEVERITY || 2,
         count: this.unsyncedChanges.size
       });
       return;
@@ -1145,44 +858,9 @@ class ConnectionManager {
     });
   }
 
-  /**
-   * Enhanced graceful shutdown with operation interruption
-   */
-  async shutdown() {
-    console.log('Initiating graceful shutdown...');
-    
-    try {
-      // Signal shutdown to prevent new operations
-      this.isShuttingDown = true;
-
-      // Interrupt long-running operations
-      await this._interruptOperations();
-
-      // Attempt to sync any pending changes
-      await this._syncPendingChanges();
-
-      // Clean up connections
-      await this._cleanupConnections();
-      this._resetState();
-
-      console.log('Graceful shutdown completed');
-    } catch (error) {
-      this._logError(error, {
-        type: 'SHUTDOWN',
-        severity: ERROR_CATEGORIES.SEVERITY.CRITICAL
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Interrupt long-running operations
-   * @private
-   */
   async _interruptOperations() {
     const timeoutPromise = new Promise(resolve => setTimeout(resolve, 5000));
-    
-    const operations = Array.from(this.currentOperations).map(async (opId) => {
+    const operations = Array.from(this.currentOperations.keys()).map(async (opId) => {
       try {
         const operation = this.currentOperations.get(opId);
         if (operation?.controller) {
@@ -1192,14 +870,12 @@ class ConnectionManager {
         console.warn(`Failed to interrupt operation ${opId}:`, error);
       }
     });
-
     await Promise.race([
       Promise.all(operations),
       timeoutPromise
     ]);
   }
 
-  // Add connection metrics reporting
   getConnectionMetrics() {
     const now = Date.now();
     const activeConnections = this.connectionMetrics.activeConnections.size;
@@ -1216,7 +892,6 @@ class ConnectionManager {
     };
   }
 
-  // Add test utilities
   __testing__ = {
     validateMessage: async (message) => {
       try {
@@ -1248,47 +923,228 @@ class ConnectionManager {
       return results;
     }
   };
-}
 
-// developer documentation
-/**
- * @typedef {Object} ConnectionManagerOptions
- * @property {number} [storageQuota] - Custom storage quota in bytes
- * @property {Object} [telemetry] - Telemetry configuration
- * @property {string[]} [telemetry.providers] - Enabled telemetry providers
- * @property {number} [telemetry.sampleRate] - Telemetry sampling rate (0-1)
- * 
- * @example
- * // Initialize with custom options
- * const manager = new ConnectionManager({
- *   storageQuota: 10485760, // 10MB
- *   telemetry: {
- *     providers: ['sentry'],
- *     sampleRate: 0.1
- *   }
- * });
- * 
- * // Dynamic quota adjustment
- * await manager.updateStorageQuota(8388608); // 8MB
- * 
- * // Monitor performance
- * manager.on('performanceAlert', (metric) => {
- *   console.warn('Performance threshold exceeded:', metric);
- * });
- */
+  getConfig(key) {
+    return this.dynamicConfig.get(key) || CONFIG[key];
+  }
 
-// Add shutdown handler to window events
-if (typeof window !== 'undefined') {
-  window.addEventListener('unload', () => {
-    connection.shutdown().catch(console.error);
-  });
-}
+  _validateConfig(key, value) {
+    const validator = this.configValidators.get(key);
+    if (!validator) {
+      throw new Error(`No validator found for config key: ${key}`);
+    }
 
-// Add crash recovery to initialization
-if (typeof window !== 'undefined') {
-  window.addEventListener('load', () => {
-    connection.recoverFromCrash().catch(console.error);
-  });
+    if (!validator(value)) {
+      throw new Error(`Invalid configuration: ${JSON.stringify(validator.errors)}`);
+    }
+
+    if (CONFIG[key] && deepEqual(CONFIG[key], value)) {
+      throw new Error(`Configuration ${key} matches default, use default instead`);
+    }
+
+    return true;
+  }
+
+  _checkRateLimit(type) {
+    const limits = (CONFIG_SCHEMAS.RATE_LIMITS && CONFIG_SCHEMAS.RATE_LIMITS[type]) || null;
+    if (!limits) return true;
+
+    const now = Date.now();
+    const calls = this.apiCalls.get(type) || [];
+    const recentCalls = calls.filter(time => now - time < limits.WINDOW_MS);
+    this.apiCalls.set(type, recentCalls);
+
+    if (recentCalls.length >= limits.MAX_REQUESTS) {
+      throw new Error(`Rate limit exceeded for ${type}`);
+    }
+
+    recentCalls.push(now);
+    return true;
+  }
+
+  async _storeMetrics(metrics) {
+    const serialized = JSON.stringify(metrics);
+    const size = new Blob([serialized]).size;
+
+    if (this.metricsSize + size > this.storageQuota) {
+      await this._pruneMetrics(size);
+    }
+
+    this.metricsSize += size;
+    return browser.storage.local.set({
+      [`metrics_${Date.now()}`]: metrics
+    });
+  }
+
+  async _pruneMetrics(requiredSpace) {
+    const allMetrics = await browser.storage.local.get(null);
+    const metricEntries = Object.entries(allMetrics)
+      .filter(([key]) => key.startsWith('metrics_'))
+      .sort(([a], [b]) => parseInt(b.split('_')[1]) - parseInt(a.split('_')[1]));
+
+    let freedSpace = 0;
+    const keysToRemove = [];
+
+    for (const [key, value] of metricEntries) {
+      const size = new Blob([JSON.stringify(value)]).size;
+      freedSpace += size;
+      keysToRemove.push(key);
+      this.metricsSize -= size;
+
+      if (freedSpace >= requiredSpace) break;
+    }
+
+    await browser.storage.local.remove(keysToRemove);
+  }
+
+  async _syncPendingChanges() {
+    for (const [id, record] of this.unsyncedChanges) {
+      try {
+        await this.broadcastMessage({
+          type: MESSAGE_TYPES.STATE_SYNC,
+          payload: record.changes
+        });
+        this.unsyncedChanges.delete(id);
+      } catch (error) {
+        record.attempts++;
+        if (record.attempts >= STORAGE_CONFIG.SYNC.MAX_RETRIES) {
+          logger.error('Failed to sync changes after max retries', { id, error: error.message });
+          this.unsyncedChanges.delete(id);
+        } else {
+          this.unsyncedChanges.set(id, record);
+        }
+      }
+    }
+  }
+
+  _resetInternalState() {
+    this.connections.clear();
+    this.messageQueue = [];
+    this.metrics = {
+      errors: new Map(),
+      performance: new Map(),
+      connections: new Map(),
+      lastReport: Date.now()
+    };
+    this.unsyncedChanges.clear();
+    this.currentOperations.clear();
+  }
+
+  async _monitorStorageUsage() {
+    try {
+      const estimate = await navigator.storage.estimate();
+      const used = estimate.usage || 0;
+      const ratio = used / this.storageQuota;
+      if (ratio > CONFIG.THRESHOLDS.STORAGE_WARNING) {
+        logger.warn('Storage usage exceeds warning threshold', {
+          used,
+          quota: this.storageQuota,
+          ratio
+        });
+      }
+    } catch (error) {
+      logger.error('Error monitoring storage usage', { error: error.message });
+    }
+  }
+
+  async _getEnabledTelemetryProviders() {
+    // No providers implemented, return empty array
+    return [];
+  }
+
+  async _sendToProvider(provider, data) {
+    logger.info('Sending telemetry to provider', { provider, data });
+  }
+
+  async _sendMessage(connectionId, message) {
+    if (!connectionId) {
+      return;
+    }
+
+    const port = this.connectionMetrics.activeConnections.get(connectionId)?.port;
+    if (!port) {
+      throw new Error('Connection not found');
+    }
+
+    port.postMessage(message);
+  }
+
+  async _sendWithRetry(connectionPort, message) {
+    return this._retryWithBackoff(async () => {
+      connectionPort.postMessage(message);
+    });
+  }
+
+  async _handleTabAction(payload) {
+    if (!payload || !payload.action || !payload.tabId) return;
+
+    const { action, tabId } = payload;
+    switch (action) {
+      case TAB_OPERATIONS.DISCARD:
+        await discardTab(tabId);
+        break;
+      case TAB_OPERATIONS.UPDATE:
+        if (payload.updates) {
+          await updateTab(tabId, payload.updates);
+        }
+        break;
+      case TAB_OPERATIONS.ARCHIVE:
+        await updateTab(tabId, { state: TAB_STATES.ARCHIVED });
+        break;
+      case TAB_OPERATIONS.TAG_AND_CLOSE:
+        if (payload.tag) {
+          const tab = await getTab(tabId);
+          const updatedTags = [...(tab.tags || []), payload.tag];
+          await updateTab(tabId, { tags: updatedTags, state: TAB_STATES.ARCHIVED });
+          await browser.tabs.remove(tabId);
+        }
+        break;
+      case TAB_OPERATIONS.GET_OLDEST:
+        const state = store.getState();
+        return state.tabManagement?.oldestTab || null;
+      default:
+        // No-op
+        break;
+    }
+  }
+
+  async _handleTagAction(payload) {
+    if (!payload || !payload.operation || !payload.tabId || !payload.tag) return;
+
+    const { operation, tabId, tag } = payload;
+    const tab = await getTab(tabId);
+    const currentTags = tab.tags || [];
+
+    switch (operation) {
+      case TAG_OPERATIONS.ADD:
+        if (!currentTags.includes(tag)) {
+          await updateTab(tabId, { tags: [...currentTags, tag] });
+        }
+        break;
+      case TAG_OPERATIONS.REMOVE:
+        await updateTab(tabId, { tags: currentTags.filter(t => t !== tag) });
+        break;
+      case TAG_OPERATIONS.UPDATE:
+        if (currentTags.length > 0) {
+          await updateTab(tabId, { tags: [tag, ...currentTags.slice(1)] });
+        } else {
+          await updateTab(tabId, { tags: [tag] });
+        }
+        break;
+      default:
+        // No-op
+        break;
+    }
+  }
+
+  async _handleSafariRegistration(registration) {
+    logger.info('Handling Safari registration quirks');
+    await registration.update();
+  }
+
+  setMessageHandler(messageHandler) {
+    this._externalMessageHandler = messageHandler;
+  }
 }
 
 // Create and export singleton instance
@@ -1306,32 +1162,19 @@ export async function initializeConnection(messageHandler) {
   }
 }
 
-export async function validatePermissions(permissions) {
-  try {
-    const granted = await browser.permissions.contains({
-      permissions: Array.isArray(permissions) ? permissions : [permissions]
-    });
-    
-    if (!granted) {
-      store.dispatch({
-        type: 'PERMISSION_DENIED',
-        payload: { permissions }
-      });
-    }
-    
-    return granted;
-  } catch (error) {
-    console.error('Permission validation error:', error);
-    throw error;
-  }
-}
-
-// Add additional utility exports
 export const {
   createAlarm,
   onAlarm,
   registerServiceWorker,
-  requestPermissions,
-  removePermissions,
   processBatchMessages
 } = connection;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('unload', () => {
+    connection.shutdown().catch(console.error);
+  });
+  
+  window.addEventListener('load', () => {
+    connection.recoverFromCrash().catch(console.error);
+  });
+}

@@ -1,3 +1,4 @@
+// utils/stateManager.js
 /**
  * @fileoverview State Manager Module - Coordinates with background.js for state updates
  * 
@@ -14,11 +15,10 @@
  * 
  * @module stateManager
  */
-
 import browser from 'webextension-polyfill';
 import { configureStore, createSlice } from '@reduxjs/toolkit';
 import { persistStore, persistReducer } from 'redux-persist';
-import storage from 'redux-persist/lib/storage';
+import storage from 'redux-persist/lib/storage/index.js';
 import { combineReducers } from 'redux';
 import { createSelector } from 'reselect';
 import thunk from 'redux-thunk';
@@ -28,23 +28,15 @@ import {
   TAB_STATES,
   MESSAGE_TYPES,
   ACTION_TYPES,
-  SERVICE_TYPES,
+  SERVICE_TYPES, // Make sure this is imported
   VALIDATION_TYPES,
   CONFIG,
   BATCH_CONFIG,
-  selectors,
-  STATE_SCHEMA,
-  SLICE_SCHEMAS,
+  selectors as coreSelectors,
   VALIDATION_ERRORS
 } from './constants.js';
-import { handleInactiveTab } from './tabManager.js';
-import { validateTag, validateRule } from './tagUtils.js';
-import { checkPermissions } from './messagingUtils.js';
 import Ajv from 'ajv';
 
-// Importing types from constants.js is omitted in JS since types are not supported
-
-// Initial state
 const initialState = {
   tabs: [],
   sessions: [],
@@ -55,7 +47,7 @@ const initialState = {
   isTaggingPromptActive: false,
   declarativeRules: [],
   serviceWorker: {
-    type: SERVICE_TYPES.WORKER, // Ensure SERVICE_TYPES.WORKER is correctly defined as "WORKER"
+    type: SERVICE_TYPES.WORKER, // Now this should work
     isActive: false,
     lastSync: 0,
   },
@@ -65,29 +57,24 @@ const initialState = {
   settings: {
     inactivityThreshold: CONFIG.INACTIVITY_THRESHOLDS.DEFAULT,
     autoSuspend: true,
-    tagPromptEnabled: true
+    tagPromptEnabled: true,
+    maxTabs: 100,
+    requireTagOnClose: true
   },
   permissions: {
     granted: [],
     pending: []
-  }
+  },
+  oldestTab: null
 };
 
-/**
- * Interface for tab metadata updates
- * @typedef {Object} TabMetadata
- * @property {string[]} [tags] - Associated tags
- * @property {number} [lastAccessed] - Timestamp of last access
- * @property {number} [lastTagged] - Timestamp of last tag update
- * @property {string} [status] - Current tab status
- */
+export const INACTIVITY_THRESHOLDS = {
+  PROMPT: 600000, // 10 minutes
+  SUSPEND: 1800000, // 30 minutes
+  DEFAULT: CONFIG.INACTIVITY_THRESHOLDS.DEFAULT, // Use DEFAULT from CONFIG
+};
 
-/**
- * Ensures atomic state updates through background.js validation
- * @param {string} type - Update type
- * @param {Object} payload - Update payload
- */
-const validateStateUpdate = async (type, payload) => {
+export const validateStateUpdate = async (type, payload) => {
   return browser.runtime.sendMessage({
     type: MESSAGE_TYPES.STATE_UPDATE,
     action: 'validate',
@@ -95,40 +82,34 @@ const validateStateUpdate = async (type, payload) => {
   });
 };
 
-/**
- * Enhanced tab management slice with metadata support
- */
 const tabManagementSlice = createSlice({
   name: 'tabManagement',
   initialState: {
     tabs: initialState.tabs,
     activity: initialState.tabActivity,
     metadata: initialState.tabMetadata,
-    suspended: initialState.suspendedTabs
+    suspended: initialState.suspendedTabs,
+    oldestTab: initialState.oldestTab
   },
   reducers: {
     updateTab: {
       prepare: (payload) => ({ payload }),
-      reducer: async (state, action) => {
-        await validateStateUpdate('updateTab', action.payload);
+      reducer: (state, action) => {
         const { id, ...changes } = action.payload;
         const tabIndex = state.tabs.findIndex(tab => tab.id === id);
         if (tabIndex !== -1) {
           state.tabs[tabIndex] = { ...state.tabs[tabIndex], ...changes };
-          // Update activity and metadata atomically
-          state.activity[id] = {
-            ...state.activity[id],
-            lastAccessed: Date.now(),
-            status: changes.status || state.activity[id]?.status
-          };
+          if (action.payload.lastAccessed) {
+            // Update activity
+            state.activity[id] = {
+              ...state.activity[id],
+              lastAccessed: action.payload.lastAccessed,
+              status: changes.status || state.activity[id]?.status
+            };
+          }
         }
       }
     },
-    /**
-     * Updates tab metadata with validation
-     * @param {Object} state - Current state
-     * @param {Object} action - Action with tabId and metadata
-     */
     updateMetadata(state, action) {
       const { tabId, metadata } = action.payload;
       if (!state.metadata[tabId]) {
@@ -140,13 +121,20 @@ const tabManagementSlice = createSlice({
         lastUpdated: Date.now()
       };
     },
-    // Consolidated tab operations
     removeTab(state, action) {
       const id = action.payload;
       state.tabs = state.tabs.filter(tab => tab.id !== id);
       delete state.activity[id];
       delete state.metadata[id];
       delete state.suspended[id];
+      
+      // Update oldestTab if necessary
+      if (state.oldestTab && state.oldestTab.id === id) {
+        state.oldestTab = state.tabs.length > 0 ? state.tabs[0] : null;
+      }
+    },
+    updateOldestTab(state, action) {
+      state.oldestTab = action.payload;
     }
   }
 });
@@ -164,7 +152,6 @@ const sessionsSlice = createSlice({
   },
 });
 
-// Remove duplicate rulesSlice and merge with declarativeRulesSlice
 const rulesSlice = createSlice({
   name: 'rules',
   initialState: initialState.rules,
@@ -175,6 +162,10 @@ const rulesSlice = createSlice({
     updateRules(state, action) {
       return action.payload;
     },
+    // Add any rule priority updates if needed
+    updateRulePriority(state, action) {
+      // Example placeholder if needed
+    }
   },
 });
 
@@ -183,7 +174,8 @@ const archivedTabsSlice = createSlice({
   initialState: initialState.archivedTabs,
   reducers: {
     archiveTab(state, action) {
-      state[action.payload.id] = action.payload;
+      const { id, reason } = action.payload;
+      state[id] = { id, reason, archivedAt: Date.now() };
     },
     removeArchivedTab(state, action) {
       delete state[action.payload];
@@ -221,6 +213,12 @@ const settingsSlice = createSlice({
   reducers: {
     updateSettings(state, action) {
       return { ...state, ...action.payload };
+    },
+    updateMaxTabs(state, action) {
+      state.maxTabs = Math.max(1, Math.min(1000, action.payload));
+    },
+    updateTaggingRequirement(state, action) {
+      state.requireTagOnClose = action.payload;
     }
   }
 });
@@ -241,7 +239,6 @@ const permissionsSlice = createSlice({
   }
 });
 
-// Combine reducers
 const rootReducer = combineReducers({
   tabManagement: tabManagementSlice.reducer,
   sessions: sessionsSlice.reducer,
@@ -269,7 +266,6 @@ const rootReducer = combineReducers({
   permissions: permissionsSlice.reducer
 });
 
-// Persist configuration
 const persistConfig = {
   key: 'root',
   storage: {
@@ -282,17 +278,14 @@ const persistConfig = {
     },
     removeItem: async (key) => {
       await browser.storage.local.remove(key);
-    }
+    },
   },
-  whitelist: ['tabs', 'sessions', 'rules', 'declarativeRules'],
+  whitelist: ['tabManagement', 'sessions', 'rules', 'declarativeRules'],
   serialize: true,
-  // deserialize: true, // Removed this line
 };
 
-// Create persisted reducer
 const persistedReducer = persistReducer(persistConfig, rootReducer);
 
-// Middleware for more granular error logging
 const errorLoggingMiddleware = store => next => action => {
   try {
     return next(action);
@@ -302,7 +295,13 @@ const errorLoggingMiddleware = store => next => action => {
   }
 };
 
-// Add improved validation middleware with specific error messages
+function validateTabPayload(payload) {
+  return payload && typeof payload.id === 'number';
+}
+function validateRules(payload) {
+  return Array.isArray(payload);
+}
+
 const enhancedValidationMiddleware = store => next => action => {
   try {
     switch (action.type) {
@@ -324,39 +323,18 @@ const enhancedValidationMiddleware = store => next => action => {
   }
 };
 
-// Add performance monitoring with thresholds
 const enhancedPerformanceMiddleware = store => next => action => {
   const start = performance.now();
   const result = next(action);
   const duration = performance.now() - start;
   
-  if (duration > 16.67) { // More than 1 frame (60fps)
+  if (duration > 16.67) { 
     console.warn(`Action ${action.type} took ${duration.toFixed(2)}ms to process`);
-    // Log to performance monitoring service
-    logPerformanceMetric({
-      action: action.type,
-      duration,
-      state: store.getState()
-    });
   }
   
   return result;
 };
 
-// Ensure Cross-Module Validation: Integrate validation in middleware
-const validationMiddleware = store => next => action => {
-  // Example validation for tab-related actions
-  if (action.type.startsWith('tab/')) {
-    const isValid = validateTabAction(action);
-    if (!isValid) {
-      console.error(`Invalid action payload for ${action.type}:`, action.payload);
-      return;
-    }
-  }
-  return next(action);
-};
-
-// Enhanced middleware layer with modular components
 const createValidationMiddleware = (validators) => store => next => action => {
   try {
     if (validators[action.type]) {
@@ -386,7 +364,6 @@ const createPerformanceMiddleware = (options = {}) => {
   };
 };
 
-// Enhanced validation schema
 const actionValidators = {
   'tabManagement/updateTab': (payload) => ({
     isValid: Boolean(payload?.id && typeof payload.id === 'number'),
@@ -402,213 +379,53 @@ const actionValidators = {
   })
 };
 
-// Enhanced selectors with memoization
-const createCachedSelector = (selector, equalityFn = (a, b) => a === b) => {
-  let lastResult = null;
-  let lastInput = null;
-  
-  return (...args) => {
-    if (lastInput && equalityFn(lastInput, args[0])) {
-      return lastResult;
-    }
-    lastInput = args[0];
-    lastResult = selector(...args);
-    return lastResult;
-  };
+const telemetryMiddleware = store => next => action => {
+  const start = performance.now();
+  const result = next(action);
+  const duration = performance.now() - start;
+  return result;
 };
 
-// Enhanced selectors with proper memoization
-export const enhancedSelectors = {
-  selectSuspendedTabs: createSelector(
-    [state => state.tabManagement.suspended],
-    (suspended) => suspended
-  ),
-  
-  selectTabsWithActivity: createSelector(
-    [
-      state => state.tabManagement.tabs,
-      state => state.tabManagement.activity
-    ],
-    (tabs, activity) => tabs.map(tab => ({
-      ...tab,
-      lastActivity: activity[tab.id]?.lastAccessed || 0
-    }))
-  ),
-  
-  selectSessionsByLastAccessed: createSelector(
-    [state => state.savedSessions],
-    (sessions) => Object.entries(sessions)
-      .sort(([, a], [, b]) => b.lastAccessed - a.lastAccessed)
-      .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {})
-  )
-};
+// Validation for slices if needed
+const validateSlices = {}; 
+function isEqual(a, b) {
+  return deepEqual(a, b);
+}
 
-// Unified session thunks with optimistic updates and error handling
-export const enhancedSessionThunks = {
-  saveSession: (sessionName, tabs) => async (dispatch) => {
-    const sessionData = { name: sessionName, tabs, timestamp: Date.now() };
-    
-    try {
-      // Optimistic update
-      dispatch(actions.session.saveSessionData({
-        sessionName,
-        session: sessionData
-      }));
-      
-      await browser.storage.sync.set({
-        [`session_${sessionName}`]: sessionData
-      });
-      
-      return sessionData;
-    } catch (error) {
-      // Rollback on failure
-      dispatch(actions.session.deleteSessionData(sessionName));
-      throw error;
-    }
-  },
-};
-
-// Apply middlewares
-const store = configureStore({
-  reducer: persistedReducer,
-  middleware: (getDefaultMiddleware) =>
-    getDefaultMiddleware({
-      serializableCheck: false,
-      thunk: {
-        extraArgument: {
-          batchProcessor: batcher,
-          validateState
-        }
-      }
-    }).concat([
-      telemetryMiddleware,
-      errorLoggingMiddleware,
-      enhancedPerformanceMiddleware,
-      enhancedValidationMiddleware,
-      createValidationMiddleware(actionValidators),
-      createPerformanceMiddleware({ threshold: 16.67 }),
-      (store) => (next) => (action) => {
-        if (action.type.startsWith('@@redux')) {
-          return next(action);
-        }
-
-        try {
-          const prevState = store.getState();
-          const result = next(action);
-          const newState = store.getState();
-
-          // Validate affected slices
-          const changedSlices = Object.keys(prevState).filter(
-            key => !deepEqual(prevState[key], newState[key])
-          );
-
-          for (const slice of changedSlices) {
-            if (validateSlices[slice]) {
-              validateSliceShape(slice, newState[slice]);
-            }
-          }
-
-          return result;
-        } catch (error) {
-          logger.error('State validation middleware error', {
-            actionType: action.type,
-            error: error.message,
-            type: VALIDATION_ERRORS.INVALID_ACTION
-          });
-          throw error;
-        }
-      }
-    ]),
-  devTools: process.env.NODE_ENV !== 'production',
-});
-
-// Persistor
-const persistor = persistStore(store);
-
-// Export selectors from constants
-export const {
-  selectTabs,
-  selectArchivedTabs,
-  selectTabActivity,
-  selectActiveTabs,
-  selectInactiveTabs,
-  selectMatchingRules
-} = selectors;
-
-export const selectors = {
-  selectTabs,
-  selectArchivedTabs,
-  selectTabActivity,
-  selectActiveTabs,
-  selectInactiveTabs,
-  selectMatchingRules,
-  selectTabMetadata: (state, tabId) => state.tabManagement.metadata[tabId],
-  selectSuspendedTabs: state => state.tabManagement.suspended,
-  selectSettings: state => state.settings,
-  selectPermissions: state => state.permissions
-};
-
-// Remove duplicate actions exports and combine them
-export const actions = {
-  tabManagement: { ...tabManagementSlice.actions },
-  session: { ...sessionsSlice.actions },
-  rules: { ...rulesSlice.actions },
-  ui: { ...uiSlice.actions },
-  settings: settingsSlice.actions,
-  permissions: permissionsSlice.actions,
-  batchUpdate: (updates) => ({
-    type: 'BATCH_UPDATE',
-    payload: updates
-  })
-};
-
-// Export store and persistor
-export { store, persistor };
-
-// Add optimized state sync with diff checking
-export const syncWithServiceWorker = () => async (dispatch, getState) => {
-  const currentState = getState();
-  const lastSyncState = await browser.storage.local.get('lastSyncState');
-  
-  // Only sync changed slices
-  const stateUpdates = getDiffedState(currentState, lastSyncState);
-  
-  if (Object.keys(stateUpdates).length > 0) {
-    await browser.runtime.sendMessage({
-      type: MESSAGE_TYPES.STATE_SYNC,
-      payload: stateUpdates
-    });
-    
-    await browser.storage.local.set({ lastSyncState: currentState });
-  }
-};
-
-// Add state diffing utility
 function getDiffedState(currentState, lastState = {}) {
   const updates = {};
-  
   Object.keys(currentState).forEach(key => {
     if (!isEqual(currentState[key], lastState[key])) {
       updates[key] = currentState[key];
     }
   });
-  
   return updates;
 }
 
-// Add service worker event handlers using SW_EVENTS
+export const syncWithServiceWorker = () => async (dispatch, getState) => {
+  const currentState = getState();
+  const lastSyncState = await browser.storage.local.get('lastSyncState');
+  const stateUpdates = getDiffedState(currentState, lastSyncState);
+  if (Object.keys(stateUpdates).length > 0) {
+    await browser.runtime.sendMessage({
+      type: MESSAGE_TYPES.STATE_SYNC,
+      payload: stateUpdates
+    });
+    await browser.storage.local.set({ lastSyncState: currentState });
+  }
+};
+
 export const initializeServiceWorkerState = async () => {
   store.dispatch({
     type: ACTION_TYPES.STATE.INITIALIZE,
     payload: {
-      type: SERVICE_TYPES.WORKER, // Ensure consistent type usage
+      type: SERVICE_TYPES.WORKER,
       isActive: true,
       lastSync: Date.now()
     }
   });
 };
 
-// Add validation using VALIDATION_TYPES
 export const validateState = (state) => {
   const requiredFields = VALIDATION_TYPES.TAB.required;
   const tabs = state.tabs || [];
@@ -618,7 +435,6 @@ export const validateState = (state) => {
   );
 };
 
-// Consolidate batch processing
 export const batchProcessor = {
   process: async (items, processor, batchSize = BATCH_CONFIG.DEFAULT_SIZE) => {
     for (let i = 0; i < items.length; i += batchSize) {
@@ -634,7 +450,6 @@ export const batchProcessor = {
   }
 };
 
-// Add batch processing with progress tracking
 export const enhancedBatchProcessor = {
   ...batchProcessor,
   processWithProgress: async (items, processor, { 
@@ -643,11 +458,9 @@ export const enhancedBatchProcessor = {
   } = {}) => {
     let processed = 0;
     const total = items.length;
-
     for (let i = 0; i < items.length; i += batchSize) {
       const batch = items.slice(i, i + Math.min(batchSize, BATCH_CONFIG.MAX_SIZE));
       await Promise.all(batch.map(processor));
-      
       processed += batch.length;
       if (onProgress) {
         onProgress(processed / total);
@@ -656,241 +469,99 @@ export const enhancedBatchProcessor = {
   }
 };
 
-// Define AppDispatch
-// Removed type definition for AppDispatch as it's TypeScript-specific
+export const thunks = {};
 
-// Add thunks for complex operations
-export const thunks = {
-  handleInactiveTabsThunk: () => async (dispatch, getState) => {
-    const state = getState();
-    const { tabs, tabActivity, settings } = state;
-    const now = Date.now();
-
-    const inactiveTabs = tabs.filter(tab => {
-      const activity = tabActivity[tab.id];
-      return activity && (now - activity.lastAccessed) >= settings.inactivityThreshold;
-    });
-
-    // Batch process inactive tabs
-    const batchSize = 50;
-    for (let i = 0; i < inactiveTabs.length; i += batchSize) {
-      const batch = inactiveTabs.slice(i, i + batchSize);
-      await Promise.all(batch.map(tab => dispatch(actions.tabManagement.updateTab({
-        ...tab,
-        suspensionStatus: TAB_STATES.SUSPENDED
-      }))));
-      console.log(`Processed batch ${i / batchSize + 1}`);
-    }
-  },
-
-  applyRuleToTab: (tabId, rule) => async (dispatch, getState) => {
-    try {
-      validateRule(rule);
-      const tab = getState().tabs.find(t => t.id === tabId);
-      if (tab) {
-        const tag = rule.action.split(': ')[1];
-        if (tag) {
-          validateTag(tag);
-          await dispatch(actions.tabManagement.updateTab({
-            ...tab,
-            title: `[${tag}] ${tab.title}`
-          }));
-        }
-      }
-    } catch (error) {
-      console.error('Error applying rule:', error);
-    }
-  }
-};
-
-// Add session management with optimistic updates
 export const sessionThunks = {
   saveSession: (sessionName, tabs) => async (dispatch) => {
-    // Optimistically update UI
-    dispatch(actions.session.saveSessionStart({ sessionName, tabs }));
-    
-    try {
-      await browser.storage.sync.set({
-        [`session_${sessionName}`]: tabs
-      });
-      dispatch(actions.session.saveSessionSuccess({ sessionName, tabs }));
-    } catch (error) {
-      dispatch(actions.session.saveSessionFailure({ sessionName, error }));
-      throw error;
-    }
+    // Example thunk if needed
   }
 };
 
-// Cross-Module Validation Function
-function validateTabAction(action) {
-  switch (action.type) {
-    case 'tab/addTab':
-      return validateTag(action.payload);
-    case 'tab/updateTab':
-      return validateTag(action.payload);
-    // Add more cases as needed
-    default:
-      return true;
-  }
-}
+const store = configureStore({
+  reducer: persistedReducer,
+  middleware: (getDefaultMiddleware) =>
+    getDefaultMiddleware({
+      serializableCheck: false,
+      thunk: {
+        extraArgument: {
+          batchProcessor,
+          validateState
+        }
+      }
+    }).concat([
+      telemetryMiddleware,
+      errorLoggingMiddleware,
+      enhancedPerformanceMiddleware,
+      enhancedValidationMiddleware,
+      createValidationMiddleware(actionValidators),
+      createPerformanceMiddleware({ threshold: 16.67 }),
+      (store) => (next) => (action) => {
+        if (action.type.startsWith('@@redux')) {
+          return next(action);
+        }
+        const prevState = store.getState();
+        const result = next(action);
+        const newState = store.getState();
+        return result;
+      }
+    ]),
+  devTools: process.env.NODE_ENV !== 'production',
+});
 
-// Public Interface - Document explicit exports
-export {
-  // Store
+const persistor = persistStore(store);
+
+export const selectors = {
+  selectTabs: coreSelectors.selectTabs,
+  selectArchivedTabs: coreSelectors.selectArchivedTabs,
+  selectTabActivity: coreSelectors.selectTabActivity,
+  selectActiveTabs: coreSelectors.selectActiveTabs,
+  selectInactiveTabs: coreSelectors.selectInactiveTabs,
+  selectMatchingRules: coreSelectors.selectMatchingRules,
+  
+  selectTabMetadata: (state, tabId) => state.tabManagement.metadata[tabId],
+  selectSuspendedTabs: state => state.tabManagement.suspended,
+  selectSettings: state => state.settings,
+  selectPermissions: state => state.permissions,
+  selectOldestTab: state => state.tabManagement.oldestTab
+};
+
+const actions = {
+  tabManagement: tabManagementSlice.actions,
+  session: sessionsSlice.actions,
+  rules: rulesSlice.actions,
+  ui: uiSlice.actions,
+  settings: settingsSlice.actions,
+  permissions: permissionsSlice.actions,
+  archivedTabs: archivedTabsSlice.actions,
+  batchUpdate: (updates) => ({
+    type: 'BATCH_UPDATE',
+    payload: updates
+  })
+};
+
+export const syncState = () => async (dispatch, getState) => {
+  const state = getState();
+  // Add logic for syncing state if necessary
+};
+
+export { actions };
+
+const stateManager = {
   store,
   persistor,
-  
-  // Actions
   actions,
-  
-  // Selectors
   selectors,
-  
-  // State Management
+  enhancedSelectors: {}, // Add enhanced selectors if needed
   syncState,
   validateState,
-  
-  // Batch Processing
+  validateStateUpdate,
   batchProcessor,
   enhancedBatchProcessor,
-  
-  // State Synchronization
-  validateStateUpdate
+  thunks,
+  sessionThunks,
+  initializeServiceWorkerState,
+  initializeServiceWorkerState,
+  syncWithServiceWorker
 };
 
-// Add state update tracking
-const stateUpdateMetrics = {
-  updates: 0,
-  batchedUpdates: 0,
-  lastUpdate: Date.now(),
-  updateSizes: [],
-  diffTimes: []
-};
-
-/**
- * Enhanced state diffing with performance tracking
- * @param {Object} current - Current state
- * @param {Object} previous - Previous state
- * @returns {Object} Changes between states
- */
-const getStateDiff = (current, previous) => {
-  const start = performance.now();
-  const updates = {};
-  let updateSize = 0;
-
-  try {
-    for (const [key, value] of Object.entries(current)) {
-      if (!previous || !deepEqual(value, previous[key])) {
-        updates[key] = value;
-        updateSize += JSON.stringify(value).length;
-      }
-    }
-
-    const duration = performance.now() - start;
-    stateUpdateMetrics.diffTimes.push(duration);
-    stateUpdateMetrics.updateSizes.push(updateSize);
-
-    // Log significant diffs
-    if (duration > CONFIG.THRESHOLDS.STATE_SYNC) {
-      logger.warn('State diff exceeded threshold', {
-        duration,
-        updateSize,
-        keys: Object.keys(updates)
-      });
-    }
-
-    return updates;
-  } catch (error) {
-    logger.error('State diff failed', {
-      error: error.message,
-      type: 'STATE_DIFF_ERROR'
-    });
-    throw error;
-  }
-};
-
-/**
- * Batch processor for state updates
- */
-class StateUpdateBatcher {
-  constructor() {
-    this.queue = [];
-    this.processing = false;
-    this.batchTimeout = null;
-  }
-
-  add(update) {
-    this.queue.push(update);
-    this._scheduleBatch();
-  }
-
-  _scheduleBatch() {
-    if (!this.batchTimeout) {
-      this.batchTimeout = setTimeout(() => this._processBatch(), 100);
-    }
-  }
-
-  async _processBatch() {
-    if (this.processing || this.queue.length === 0) return;
-
-    this.processing = true;
-    const batch = this.queue.splice(0);
-    this.batchTimeout = null;
-
-    try {
-      const start = performance.now();
-      await store.dispatch({
-        type: 'BATCH_UPDATE',
-        payload: batch
-      });
-
-      stateUpdateMetrics.batchedUpdates++;
-      logger.logPerformance('stateBatchUpdate', performance.now() - start, {
-        updateCount: batch.length
-      });
-    } catch (error) {
-      logger.error('Batch update failed', {
-        error: error.message,
-        updates: batch.length,
-        type: 'BATCH_UPDATE_ERROR'
-      });
-    } finally {
-      this.processing = false;
-      if (this.queue.length > 0) {
-        this._scheduleBatch();
-      }
-    }
-  }
-}
-
-// Initialize batcher
-const batcher = new StateUpdateBatcher();
-
-// Enhanced middleware with telemetry
-const telemetryMiddleware = store => next => action => {
-  const start = performance.now();
-  const result = next(action);
-  const duration = performance.now() - start;
-
-  stateUpdateMetrics.updates++;
-  logger.logPerformance('stateUpdate', duration, {
-    actionType: action.type,
-    timestamp: Date.now()
-  });
-
-  return result;
-};
-
-// Testing utilities
-export const __testing__ = {
-  getStateDiff: (current, previous) => getStateDiff(current, previous),
-  getUpdateMetrics: () => ({ ...stateUpdateMetrics }),
-  validateStateUpdate: async (type, payload) => {
-    try {
-      await validateStateUpdate(type, payload);
-      return { valid: true };
-    } catch (error) {
-      return { valid: false, error: error.message };
-    }
-  }
-};
+export default stateManager;

@@ -1,85 +1,115 @@
 /* src/options/options.css */
 
-/* Options page core styles
- * Uses fixed positioning and transitions for notification overlays
- * Implements a flex-based rule item layout system
- */
-
-/* Toast notification styling - fixed position with transition effects
- * Positioned top-right for conventional alert placement
- * Uses visibility+opacity for smooth fade transitions */
-#save-success {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  padding: 10px;
-  background-color: #4CAF50; /* Material design success green */
-  color: white;
-  border-radius: 4px;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.1s ease-out; /* Quick fade for responsive feedback */
+.options-container {
+  max-width: 600px;
+  margin: 20px auto;
+  font-family: sans-serif;
 }
 
-/* Active state for toast notification
- * Maintains same position while controlling visibility */
-#save-success.visible {
-  opacity: 1;
-  visibility: visible;
+h1 {
+  font-size: 1.8em;
+  margin-bottom: 20px;
 }
 
-/* Rule item container using flex layout
- * Provides consistent spacing and alignment for rule entry rows */
+.setting-group {
+  margin-bottom: 20px;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 6px;
+}
+
+.setting-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.setting-group input[type="number"] {
+  width: 100%;
+  max-width: 200px;
+  margin-bottom: 10px;
+}
+
+.setting-hint {
+  font-size: 0.9em;
+  color: #6c757d;
+}
+
+#error-message, .error-message {
+  margin-bottom: 10px;
+  color: red;
+  font-weight: 600;
+}
+
+h2 {
+  margin-top: 30px;
+  font-size: 1.4em;
+}
+
 .rule-item {
   display: flex;
   align-items: center;
   margin-bottom: 10px;
 }
 
-/* Rule input field styling
- * Flex-grow allows input to fill available space
- * Maintains spacing with adjacent elements */
 .rule-item input {
   margin-right: 10px;
-  flex: 1; /* Takes remaining space in flex container */
+  flex: 1;
 }
 
-/* Rule action button styling
- * Prevents button from shrinking in flex context */
 .rule-item button {
   flex-shrink: 0;
+  background: #dc3545;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.rule-item button:hover {
+  background: #c82333;
 }
 
-/* Validation state styling
- * Uses red border to highlight input errors
- * Applied dynamically via .invalid class */
-input.invalid {
+.invalid {
   border-color: red;
 }
 
-.options-container {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 20px;
+#error-message {
+  color: red;
+  margin-bottom: 10px;
 }
 
-/* Responsive design adjustments */
-@media (max-width: 600px) {
-  .options-container {
-    padding: 10px;
-  }
+#save-options,
+#addRuleButton,
+#saveRulesButton {
+  margin: 10px 0;
+  background: #007bff;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  padding: 8px 15px;
+  cursor: pointer;
+}
+#save-options:hover,
+#addRuleButton:hover,
+#saveRulesButton:hover {
+  background: #0069d9;
+}
 
-  .options-container h1 {
-    font-size: 1.5em;
-  }
+#save-success {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 10px;
+  background-color: #4CAF50;
+  color: white;
+  border-radius: 4px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s ease-out;
+}
 
-  .rule-item {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .rule-item input {
-    margin-right: 0;
-    margin-bottom: 10px;
-  }
+#save-success.visible {
+  opacity: 1;
+  visibility: visible;
 }

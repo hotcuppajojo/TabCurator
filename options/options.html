@@ -1,44 +1,16 @@
 <!-- src/options/options.html -->
 <!DOCTYPE html>
-<!-- standard HTML5 boilerplate for modern browser compatibility -->
 <html lang="en">
 <head>
-  <!-- Core meta configuration -->
-  <!-- UTF-8 and viewport tags required for extension compatibility across browsers and devices -->
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  
-  <!-- CSP implementation: strict security model for extension -->
-  <!-- Allows only local resources and minimal required unsafe policies -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'">
-  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TabCurator Options</title>
-  
-  <!-- External stylesheet reference maintains separation of concerns -->
-  <!-- Enables browser caching and parallel resource loading -->
   <link rel="stylesheet" href="options.css">
-  <script src="../vendor/browser-polyfill.js"></script>
-  <!-- Embedded styles for rule management -->
-  <!-- Flexbox layout chosen for dynamic rule components and responsive design -->
-  <style>
-    /* New styles for rule management */
-    .rule-item {
-        display: flex;
-        align-items: center;
-        margin-bottom: 10px;
-    }
-    .rule-item input {
-        margin-right: 10px;
-        flex: 1;
-    }
-    .rule-item button {
-        flex-shrink: 0;
-    }
-  </style>
   <script src="../vendor/browser-polyfill.js"></script>
 </head>
 <body>
   <div id="root"></div>
+  <!-- The bundler will produce a compiled options.js from options.jsx -->
   <script src="options.js"></script>
 </body>
 </html>

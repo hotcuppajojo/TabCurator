@@ -1,8 +1,7 @@
 // utils/chromePromise.js
 
 import browser from 'webextension-polyfill';
-import { CONFIG } from './constants.js';
-import { logger } from './logger.js';
+import { logger } from './logger.js'; // CONFIG import removed since it wasn't used
 
 // Validation helpers
 const validateStorageKey = (key) => {
@@ -251,15 +250,40 @@ export const getAPIMetrics = () => {
   
   for (const [category, data] of Object.entries(API_METRICS)) {
     const samples = Array.from(data.samples.values());
+    if (samples.length === 0) {
+      metrics[category] = {
+        avgDuration: 0,
+        maxDuration: 0,
+        minDuration: 0,
+        sampleCount: 0,
+        thresholdBreaches: 0,
+        operations: {}
+      };
+      continue;
+    }
+
     const durations = samples.map(s => s.duration);
-    
+    const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
+    const maxDuration = Math.max(...durations);
+    const minDuration = Math.min(...durations);
+    const thresholdBreaches = samples.filter(s => s.duration > data.threshold).length;
+
+    // Group operations by name
+    const operationGroups = samples.reduce((acc, s) => {
+      if (!acc[s.operation]) {
+        acc[s.operation] = [];
+      }
+      acc[s.operation].push(s);
+      return acc;
+    }, {});
+
     metrics[category] = {
-      avgDuration: durations.reduce((a, b) => a + b, 0) / durations.length,
-      maxDuration: Math.max(...durations),
-      minDuration: Math.min(...durations),
+      avgDuration,
+      maxDuration,
+      minDuration,
       sampleCount: samples.length,
-      thresholdBreaches: samples.filter(s => s.duration > data.threshold).length,
-      operations: Object.groupBy(samples, s => s.operation)
+      thresholdBreaches,
+      operations: operationGroups
     };
   }
   

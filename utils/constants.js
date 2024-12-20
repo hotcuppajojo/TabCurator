@@ -1,3 +1,4 @@
+// utils/constants.js
 /**
  * @fileoverview Constants and Type Definitions
  * Centralizes configuration, types, and constants used across modules.
@@ -7,7 +8,7 @@
 
 import { createSelector } from 'reselect';
 
-// Types
+// Types (for documentation and tooling only; not exported as values)
 /**
  * @typedef {Object} Tab
  * @property {number} id
@@ -61,6 +62,7 @@ import { createSelector } from 'reselect';
  * @property {Object} serviceWorker
  */
 
+// Additional validation typedefs
 /**
  * @typedef {Object} TabValidation
  * @property {string[]} required - Required tab properties
@@ -75,14 +77,14 @@ import { createSelector } from 'reselect';
 
 export const CONNECTION_NAME = 'tabActivity';
 
-// Tab States
 export const TAB_STATES = Object.freeze({
   ACTIVE: 'ACTIVE',
   SUSPENDED: 'SUSPENDED',
   ARCHIVED: 'ARCHIVED',
+  PENDING_TAG: 'PENDING_TAG',
+  EXCEEDED_LIMIT: 'EXCEEDED_LIMIT'
 });
 
-// Message Types
 export const MESSAGE_TYPES = Object.freeze({
   STATE_SYNC: 'STATE_SYNC',
   CONNECTION_ACK: 'CONNECTION_ACK',
@@ -90,28 +92,36 @@ export const MESSAGE_TYPES = Object.freeze({
   TAB_ACTION: 'TAB_ACTION',
   STATE_UPDATE: 'STATE_UPDATE',
   RULE_UPDATE: 'RULE_UPDATE',
-  SESSION_ACTION: 'SESSION_ACTION'
+  SESSION_ACTION: 'SESSION_ACTION',
+  // Added for service worker updates if needed
+  SERVICE_WORKER_UPDATE: 'SERVICE_WORKER_UPDATE',
+  TAG_ACTION: 'TAG_ACTION'
 });
 
-// Error Types
 export const ERROR_TYPES = Object.freeze({
   PERMISSION_DENIED: 'PERMISSION_DENIED',
   API_UNAVAILABLE: 'API_UNAVAILABLE',
   INVALID_MESSAGE: 'INVALID_MESSAGE',
-  CONNECTION_ERROR: 'CONNECTION_ERROR'
+  CONNECTION_ERROR: 'CONNECTION_ERROR',
+  TAB_LIMIT_EXCEEDED: 'TAB_LIMIT_EXCEEDED',
+  TAGGING_REQUIRED: 'TAGGING_REQUIRED'
 });
 
 export const ERROR_CATEGORIES = Object.freeze({
   TRANSIENT: {
     CONNECTION: 'connection',
     TIMEOUT: 'timeout',
-    RATE_LIMIT: 'rateLimit'
+    RATE_LIMIT: 'rateLimit',
+    UNKNOWN: 'unknown',
+    NETWORK: 'connection'
   },
   CRITICAL: {
     AUTHENTICATION: 'auth',
     PERMISSION: 'permission',
     API: 'api',
-    STATE: 'state'
+    STATE: 'state',
+    STORAGE: 'storage',
+    VALIDATION: 'validation'
   },
   SEVERITY: {
     LOW: 1,
@@ -128,13 +138,12 @@ export const DYNAMIC_CONFIG_KEYS = Object.freeze({
   BATCH: 'batch'
 });
 
-// Action Types
 export const ACTION_TYPES = Object.freeze({
   STATE: {
     RESET: 'RESET_STATE',
     INITIALIZE: 'INITIALIZE_STATE',
     RECOVER: 'RECOVER_STATE',
-    SYNC: 'SYNC_STATE', // Ensure SYNC_STATE is defined if used
+    SYNC: 'SYNC_STATE'
   },
   TAB: {
     ARCHIVE: 'ARCHIVE_TAB',
@@ -151,22 +160,17 @@ export const ACTION_TYPES = Object.freeze({
   },
 });
 
-// Service Types
 export const SERVICE_TYPES = Object.freeze({
   WORKER: 'WORKER',
   CONTENT: 'CONTENT',
-  POPUP: 'POPUP'
+  POPUP: 'POPUP',
+  BACKGROUND: 'BACKGROUND'
 });
 
-// Validation Types
-/**
- * Enhanced validation types with documentation
- */
 export const VALIDATION_TYPES = Object.freeze({
   TAB: {
     required: ['id', 'url'],
     optional: ['title', 'active', 'discarded'],
-    /** Validates core tab properties */
     validate: (tab) => {
       return tab?.id && typeof tab.id === 'number' &&
              tab?.url && typeof tab.url === 'string';
@@ -175,16 +179,20 @@ export const VALIDATION_TYPES = Object.freeze({
   TAG: {
     MAX_LENGTH: 50,
     PATTERN: /^[a-zA-Z0-9-_]+$/,
-    /** Validates tag format */
     validate: (tag) => {
       return typeof tag === 'string' &&
              tag.length <= TAG_VALIDATION.TAG.MAX_LENGTH &&
              TAG_VALIDATION.TAG.PATTERN.test(tag);
     }
+  },
+  TAB_LIMIT: {
+    validate: (count, limit) => ({
+      isValid: count <= limit,
+      message: count > limit ? `Tab limit of ${limit} exceeded` : null
+    })
   }
 });
 
-// Permissions
 export const PERMISSIONS = Object.freeze({
   REQUIRED: {
     TABS: ['tabs'],
@@ -195,13 +203,12 @@ export const PERMISSIONS = Object.freeze({
   OPTIONAL: ['declarativeNetRequest']
 });
 
-// Configuration Constants
 export const CONFIG = Object.freeze({
   TIMEOUTS: {
     SHUTDOWN: 5000,
     SYNC: 10000,
-    CLEANUP: 300000, // 5 minutes
-    RULE_VALIDATION: 60000, // 1 minute
+    CLEANUP: 300000,
+    RULE_VALIDATION: 60000,
     CONNECTION: 5000,
     MESSAGE: 3000,
     BATCH: 30000,
@@ -211,21 +218,24 @@ export const CONFIG = Object.freeze({
     MESSAGE_PROCESSING: 50,
     STATE_SYNC: 100,
     BATCH_PROCESSING: 200,
-    PERFORMANCE_WARNING: 16.67, // 60fps frame time
-    STORAGE_WARNING: 0.8, // 80% usage warning
-    SYNC_QUEUE: 100 // Maximum unsynced changes
+    PERFORMANCE_WARNING: 16.67,
+    STORAGE_WARNING: 0.8,
+    SYNC_QUEUE: 100
   },
   BATCH: {
     MAX_SIZE: 100,
-    DEFAULT_SIZE: 10,
-    TIMEOUT: 5000,
-    FLUSH_SIZE: 50 // Size before auto-flush for telemetry
+    DEFAULT: {
+      SIZE: 10,
+      TIMEOUT: 5000
+    },
+    FLUSH_SIZE: 50,
+    TIMEOUT: 5000
   },
   STORAGE: {
     QUOTA: {
-      MIN_BYTES: 1048576, // 1MB
-      MAX_BYTES: 10485760, // 10MB
-      DEFAULT_BYTES: 5242880 // 5MB
+      MIN_BYTES: 1048576,
+      MAX_BYTES: 10485760,
+      DEFAULT_BYTES: 5242880
     },
     SYNC: {
       MAX_RETRIES: 3,
@@ -233,14 +243,14 @@ export const CONFIG = Object.freeze({
       MAX_UNSYNCED: 100
     },
     RETENTION: {
-      METRICS: 86400000, // 24 hours
-      EVENTS: 3600000 // 1 hour
+      METRICS: 86400000,
+      EVENTS: 3600000
     }
   },
   TELEMETRY: {
     BATCH_SIZE: 10,
     FLUSH_INTERVAL: 30000,
-    REPORTING_INTERVAL: 300000, // 5 minutes
+    REPORTING_INTERVAL: 300000,
     MAX_ENTRIES: 1000,
     SAMPLE_SIZE: 5
   },
@@ -251,8 +261,17 @@ export const CONFIG = Object.freeze({
     BACKOFF_BASE: 1000
   },
   INACTIVITY: {
-    PROMPT: 600000, // 10 minutes
-    SUSPEND: 1800000 // 30 minutes
+    PROMPT: 600000,
+    SUSPEND: 1800000
+  },
+  TABS: {
+    LIMITS: null, // Set below
+    PROMPT_THRESHOLD: 0.9,
+    REQUIRE_TAG_ON_CLOSE: true
+  },
+  // Added METRICS config for reporting interval reference
+  METRICS: {
+    REPORTING_INTERVAL: 300000 // 5 minutes
   },
 
   getTimeout: (key, fallback) => {
@@ -283,18 +302,24 @@ export const CONFIG = Object.freeze({
       return value;
     }
     return fallback || CONFIG_DEFAULTS.BATCH[key] || CONFIG_DEFAULTS.BATCH.MIN_SIZE;
+  },
+
+  INACTIVITY_THRESHOLDS: {
+    DEFAULT: 60,
+    PROMPT: 600000,
+    SUSPEND: 1800000,
   }
 });
 
-// Update configuration constants
 export const BATCH_CONFIG = CONFIG.BATCH;
 export const STORAGE_CONFIG = CONFIG.STORAGE;
+
+// TELEMETRY_CONFIG was referenced, define it here:
 export const TELEMETRY_CONFIG = {
-  ...TELEMETRY_CONFIG,
+  ...CONFIG.TELEMETRY,
   THRESHOLDS: CONFIG.THRESHOLDS
 };
 
-// Add tab management constants
 export const TAB_PERMISSIONS = Object.freeze({
   REQUIRED: ['tabs'],
   OPTIONAL: ['declarativeNetRequest']
@@ -304,15 +329,17 @@ export const TAB_OPERATIONS = Object.freeze({
   DISCARD: 'discard',
   BOOKMARK: 'bookmark',
   ARCHIVE: 'archive',
-  UPDATE: 'update'
+  UPDATE: 'update',
+  TAG_AND_CLOSE: 'tagAndClose',
+  GET_OLDEST: 'getOldest'
 });
 
 export const INACTIVITY_THRESHOLDS = {
-  PROMPT: 600000, // 10 minutes
-  SUSPEND: 1800000, // 30 minutes
+  PROMPT: 600000,
+  SUSPEND: 1800000,
+  DEFAULT: 600000 // Add this line
 };
 
-// Add tagging constants
 export const TAG_TYPES = Object.freeze({
   AUTOMATED: 'automated',
   MANUAL: 'manual'
@@ -343,7 +370,15 @@ export const BOOKMARK_CONFIG = Object.freeze({
   FOLDER_NAME: 'TabCurator'
 });
 
-// Selectors
+export const TAB_LIMITS = Object.freeze({
+  MIN: 1,
+  MAX: 1000,
+  DEFAULT: 100
+});
+
+// Set the TABS.LIMITS in CONFIG now that TAB_LIMITS is defined
+CONFIG.TABS.LIMITS = TAB_LIMITS;
+
 export const createTabSelector = (selector) => selector;
 
 export const selectors = {
@@ -370,64 +405,38 @@ export const selectors = {
       new RegExp(rule.condition.urlFilter.replace(/\*/g, '.*')).test(url)
     )
   )
-}
-
-// Define the types before exporting
-export const Tab = /** @typedef {Object} Tab
- * @property {number} id
- * @property {string} title
- * @property {string} url
- * @property {boolean} active
- * @property {keyof typeof TAB_STATES} state
- */ {};
-
-export const Session = /** @typedef {Object} Session
- * @property {string} name
- * @property {Tab[]} tabs
- */ {};
-
-export const Rule = /** @typedef {Object} Rule
- * @property {number} id
- * @property {string} condition
- * @property {string} action
- */ {};
-
-export const DeclarativeRule = /** @typedef {Object} DeclarativeRule
- * @property {number} id
- * @property {number} priority
- * @property {Object} condition
- * @property {string} condition.urlFilter
- * @property {string[]} condition.resourceTypes
- * @property {string[]} [condition.domains]
- * @property {Object} action
- */ {};
-
-export const TabActivity = /** @typedef {Object} TabActivity
- * @property {number} lastAccessed
- * @property {keyof typeof TAB_STATES} suspensionStatus
- * @property {string[]} [tags]
- */ {};
-
-// Export types for TypeScript
-export {
-  Tab,
-  Session,
-  Rule,
-  DeclarativeRule,
-  TabActivity,
-  AppState,
-  // Constants
-  TAB_STATES,
-  MESSAGE_TYPES,
-  ACTION_TYPES,
-  // Validation
-  VALIDATION_TYPES,
-  // Configuration
-  CONFIG,
-  BATCH_CONFIG,
-  // Selectors
-  selectors
 };
+
+// No longer export Tab, Session, Rule, DeclarativeRule, TabActivity, AppState as values.
+// They remain as JSDoc typedefs only.
+
+export const LOG_CATEGORIES = Object.freeze({
+  SECURITY: 'security',
+  PERFORMANCE: 'performance',
+  STATE: 'state',
+  TELEMETRY: 'telemetry',
+  API: 'api',
+  UI: 'ui',
+  RULES: 'rules',
+  TABS: 'tabs'
+});
+
+export const LOG_LEVELS = Object.freeze({
+  NONE: 0,
+  ERROR: 1,
+  WARN: 2,
+  INFO: 3,
+  DEBUG: 4,
+  ALL: 5,
+  PERFORMANCE: 'performance',
+  SECURITY: 'security',
+  STATE: 'state',
+  TELEMETRY: 'telemetry',
+  API: 'api',
+  UI: 'ui',
+  RULES: 'rules',
+  TABS: 'tabs'
+});
 
 /**
  * @typedef {Object} ConfigDefaults
@@ -443,8 +452,8 @@ export const CONFIG_DEFAULTS = Object.freeze({
     MESSAGE: 3000,
     BATCH: 30000,
     EMERGENCY: 5000,
-    MIN: 1000, // Minimum allowed timeout
-    MAX: 600000 // Maximum allowed timeout (10 minutes)
+    MIN: 1000,
+    MAX: 600000
   },
   THRESHOLDS: {
     MESSAGE_PROCESSING: 50,
@@ -453,8 +462,8 @@ export const CONFIG_DEFAULTS = Object.freeze({
     PERFORMANCE_WARNING: 16.67,
     STORAGE_WARNING: 0.8,
     SYNC_QUEUE: 100,
-    MIN: 10, // Minimum allowed threshold
-    MAX: 1000 // Maximum allowed threshold
+    MIN: 10,
+    MAX: 1000
   },
   BATCH: {
     MAX_SIZE: 100,
@@ -490,7 +499,6 @@ export const CONFIG_RANGES = Object.freeze({
   }
 });
 
-// Add validation schemas
 export const CONFIG_SCHEMAS = Object.freeze({
   timeout: {
     type: 'number',
@@ -506,17 +514,22 @@ export const CONFIG_SCHEMAS = Object.freeze({
     type: 'number',
     minimum: CONFIG_RANGES.BATCH.size.min,
     maximum: CONFIG_RANGES.BATCH.size.max
+  },
+  // Include RATE_LIMITS here instead of adding it after freeze
+  RATE_LIMITS: {
+    API_CALLS: {
+      WINDOW_MS: 60000, // 1 minute window
+      MAX_REQUESTS: 100
+    }
   }
 });
 
-// Add configuration type definitions
 export const CONFIG_TYPES = Object.freeze({
   TIMEOUT: 'timeout',
   THRESHOLD: 'threshold',
   BATCH_SIZE: 'batchSize'
 });
 
-// Add validation helper
 export const validateConfigValue = (type, value) => {
   const schema = CONFIG_SCHEMAS[type];
   if (!schema) {
@@ -532,7 +545,6 @@ export const validateConfigValue = (type, value) => {
   return value;
 };
 
-// Add comprehensive state validation schema after type definitions
 export const STATE_SCHEMA = Object.freeze({
   type: 'object',
   required: ['tabs', 'sessions', 'rules', 'archivedTabs', 'tabActivity', 'savedSessions'],
@@ -662,7 +674,6 @@ export const STATE_SCHEMA = Object.freeze({
   }
 });
 
-// Add slice-specific schemas
 export const SLICE_SCHEMAS = Object.freeze({
   tabManagement: {
     type: 'object',
@@ -692,3 +703,13 @@ export const SLICE_SCHEMAS = Object.freeze({
     $ref: '#/properties/rules'
   }
 });
+
+export const VALIDATION_ERRORS = {
+  // Define your validation errors here
+  PERMISSION_DENIED: 'Permission Denied',
+  API_UNAVAILABLE: 'API Unavailable',
+  INVALID_MESSAGE: 'Invalid Message',
+  CONNECTION_ERROR: 'Connection Error',
+  TAB_LIMIT_EXCEEDED: 'Tab Limit Exceeded',
+  TAGGING_REQUIRED: 'Tagging Required'
+};

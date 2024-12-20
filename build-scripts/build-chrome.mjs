@@ -40,6 +40,7 @@ function copyNonCompiledSource() {
 }
 
 // Copy test files (including test/test.html) directly from project root
+/*
 function copyTestFiles() {
   console.log('Copying test files...');
   const testSrc = path.join(PROJECT_DIR, 'test');
@@ -52,6 +53,7 @@ function copyTestFiles() {
     console.warn('No test directory found at project root, skipping test file copy.');
   }
 }
+*/
 
 // Separate browser-specific files to support multi-browser architecture
 function copyChromeFiles() {
@@ -106,9 +108,7 @@ function packageExtension() {
 
 // Sequential build process ensures dependency order and clean state
 export async function buildChrome() {
-  // Remove the second "Cleaning previous Chrome build..." log
-  console.log('Cleaning previous Chrome build...');
-  
+
   try {
     cleanBuild();
     
@@ -121,7 +121,7 @@ export async function buildChrome() {
     // After webpack outputs, copy necessary files
     copyChromeFiles();
     copyNonCompiledSource();
-    copyTestFiles();
+    // copyTestFiles();
 
     await optimizeAssets();
     

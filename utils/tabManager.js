@@ -16,40 +16,16 @@
  */
 
 import browser from 'webextension-polyfill';
-import { store } from './stateManager.ts';
-import { updateTabActivity, archiveTab, actions } from './stateManager.js';
-import { MESSAGE_TYPES, checkPermissions } from './messagingUtils.js';
-import { 
+import { store, actions } from './stateManager.js'; // Removed updateTabActivity, archiveTab imports
+import { MESSAGE_TYPES } from './constants.js'; 
+import {
   TAB_STATES,
   CONFIG,
-  VALIDATION_TYPES,
-  TAB_PERMISSIONS,
+  VALIDATION_TYPES
 } from './constants.js';
 import { logger } from './logger.js';
 
-// Add permission validation
-export async function validatePermissions(type = 'BASE') {
-  const permissions = await browser.permissions.getAll();
-  return TAB_PERMISSIONS[type].every(
-    p => permissions.permissions.includes(p)
-  );
-}
-
-// Add operation validation
-export const validateOperation = async (operation, tab) => {
-  if (!TAB_OPERATIONS[operation]) {
-    throw new Error(`Invalid operation: ${operation}`);
-  }
-  
-  const permissions = await checkPermissions(TAB_PERMISSIONS.REQUIRED);
-  if (!permissions) {
-    throw new Error('Required permissions not granted');
-  }
-  
-  return true;
-};
-
-// Add MV3 specific tab handling
+// Operations defined for tabs
 export const TAB_OPERATIONS = Object.freeze({
   DISCARD: 'discard',
   BOOKMARK: 'bookmark',
@@ -57,13 +33,11 @@ export const TAB_OPERATIONS = Object.freeze({
   UPDATE: 'update'
 });
 
-// Add inactivity threshold management
 export const INACTIVITY_THRESHOLDS = {
   PROMPT: 600000, // 10 minutes
-  SUSPEND: 1800000, // 30 minutes
+  SUSPEND: 1800000 // 30 minutes
 };
 
-// Add centralized validation utilities
 const validateTabId = (tabId) => {
   if (!tabId || typeof tabId !== 'number') {
     const error = new Error('Invalid tab ID');
@@ -77,7 +51,7 @@ const validateTabId = (tabId) => {
   return true;
 };
 
-// Add enhanced retry mechanism
+// Retry mechanism for operations
 const withRetry = async (operation, options = {}) => {
   const {
     maxAttempts = CONFIG.RETRY.MAX_ATTEMPTS,
@@ -121,14 +95,11 @@ const withRetry = async (operation, options = {}) => {
 export async function queryTabs(queryInfo) {
   const startTime = performance.now();
   try {
-    await validatePermissions();
     const tabs = await browser.tabs.query(queryInfo);
-    
     logger.logPerformance('tabQuery', performance.now() - startTime, {
       count: tabs.length,
       filters: Object.keys(queryInfo)
     });
-    
     return tabs;
   } catch (error) {
     logger.error('Tab query failed', {
@@ -152,7 +123,8 @@ export async function getTab(tabId) {
     try {
       const tab = await browser.tabs.get(tabId);
       logger.logPerformance('tabGet', performance.now() - startTime, { tabId });
-      store.dispatch(updateTabActivity(tabId, Date.now()));
+      // Update tab activity using updateTab to reflect last accessed
+      store.dispatch(actions.tabManagement.updateTab({ id: tabId, lastAccessed: Date.now() }));
       return tab;
     } catch (error) {
       logger.error('Tab get failed', {
@@ -191,7 +163,8 @@ export async function createTab(createProperties) {
 export async function updateTab(tabId, updateProperties) {
   try {
     const updatedTab = await browser.tabs.update(tabId, updateProperties);
-    store.dispatch(actions.tab.updateActivity(tabId, Date.now()));
+    // Update last accessed time when tab is updated
+    store.dispatch(actions.tabManagement.updateTab({ id: tabId, lastAccessed: Date.now() }));
     return updatedTab;
   } catch (err) {
     console.error(`Error updating tab ${tabId}:`, err);
@@ -207,10 +180,8 @@ export async function updateTab(tabId, updateProperties) {
 export async function removeTab(tabId) {
   try {
     await browser.tabs.remove(tabId);
-
-    // Dispatch an action to archive the removed tab
-    store.dispatch(archiveTab(tabId, 'Removed', { id: tabId }));
-
+    // Archive the tab using the archivedTabs slice
+    store.dispatch(actions.archivedTabs.archiveTab({ id: tabId, reason: 'Removed' }));
   } catch (err) {
     console.error(`Error removing tab ${tabId}:`, err);
     throw err;
@@ -218,9 +189,9 @@ export async function removeTab(tabId) {
 }
 
 /**
- * Wrapper for discarding a tab - coordinates with background.js for validation
+ * Wrapper for discarding a tab with background.js validation
  * @param {number} tabId - The ID of the tab to discard
- * @param {Object} [criteria] - Optional criteria to check
+ * @param {Object} [criteria] - Optional criteria
  * @returns {Promise<void>}
  */
 export async function discardTab(tabId, criteria) {
@@ -235,9 +206,9 @@ export async function discardTab(tabId, criteria) {
     const duration = performance.now() - startTime;
     logger.logPerformance('tabDiscard', duration, { tabId });
     
-    // Telemetry feedback loop
+    // Telemetry feedback loop - if rule priority adjustments needed
     if (duration > CONFIG.THRESHOLDS.TAB_DISCARD) {
-      store.dispatch(actions.rules.updateRulePriority({
+      store.dispatch(actions.rules.updateRulesPriority && actions.rules.updateRulesPriority({
         type: 'discard',
         adjustment: 'decrease'
       }));
@@ -253,7 +224,7 @@ export async function discardTab(tabId, criteria) {
 }
 
 /**
- * Discards all inactive tabs that meet specified criteria.
+ * Discards all inactive tabs.
  * @returns {Promise<void>}
  */
 export async function discardInactiveTabs() {
@@ -264,9 +235,7 @@ export async function discardInactiveTabs() {
 
   try {
     const inactiveTabs = await browser.tabs.query({ active: false });
-    
     for (const tab of inactiveTabs) {
-      // Update to use typed messages
       await discardTab(tab.id, {
         type: MESSAGE_TYPES.TAB_ACTION,
         action: 'discard'
@@ -298,8 +267,9 @@ export async function checkInactiveTabs() {
   const now = Date.now();
   const tabs = await browser.tabs.query({});
   
+  const state = store.getState();
   for (const tab of tabs) {
-    const lastActivity = store.getState().tabActivity[tab.id] || now;
+    const lastActivity = state.tabManagement.activity[tab.id]?.lastAccessed || now;
     const inactiveTime = now - lastActivity;
 
     if (inactiveTime >= CONFIG.INACTIVITY_THRESHOLDS.SUSPEND) {
@@ -313,40 +283,37 @@ export async function checkInactiveTabs() {
   }
 }
 
-// Improve inactivity handling
-export const handleInactiveTab = async (tab, thresholds) => {
-  const lastActivity = await getTabActivity(tab.id);
-  const inactiveTime = Date.now() - lastActivity;
-
-  if (inactiveTime >= thresholds.SUSPEND) {
-    await discardTab(tab.id, { autoRestore: true });
-  } else if (inactiveTime >= thresholds.PROMPT) {
-    await promptForTag(tab.id);
-  }
-  
-  return inactiveTime;
-};
-
-// Add batch processing for tabs
-export async function* processTabs(tabs, batchSize = 10) {
+export async function* processTabBatches(tabs, batchSize = 10) {
   for (let i = 0; i < tabs.length; i += batchSize) {
     yield tabs.slice(i, i + batchSize);
   }
 }
 
-// Add tab lifecycle management
-export const TabLifecycle = Object.freeze({
-  async suspend(tabId) {
-    await validatePermissions();
-    await browser.tabs.discard(tabId);
-  },
-  async resume(tabId) {
-    await validatePermissions();
-    await browser.tabs.update(tabId, { autoDiscardable: false });
+/**
+ * Handles tab creation with tab limit enforcement.
+ * For simplicity, we just return false if limit exceeded and set oldest tab.
+ * @param {Object} tab - The tab object.
+ * @returns {Promise<boolean>}
+ */
+export async function handleTabCreation(tab) {
+  const state = store.getState();
+  const allTabs = await browser.tabs.query({});
+  if (allTabs.length > state.settings.maxTabs) {
+    store.dispatch(actions.tabManagement.updateOldestTab(
+      allTabs.reduce((oldest, t) => {
+        const activity = state.tabManagement.activity;
+        const lastAccessed = activity[t.id]?.lastAccessed || 0;
+        if (!oldest || lastAccessed < (activity[oldest.id]?.lastAccessed || 0)) {
+          return t;
+        }
+        return oldest;
+      }, null)
+    ));
+    return false;
   }
-});
+  return true;
+}
 
-// Add explicit validation
 export const validateTab = (tab) => {
   if (!tab?.id || typeof tab.id !== 'number') {
     throw new TypeError('Invalid tab ID');
@@ -361,7 +328,6 @@ export const validateTab = (tab) => {
   return true;
 };
 
-// Add batch processing capability
 export async function* processTabBatch(tabs, size = 10) {
   if (!Array.isArray(tabs)) {
     throw new TypeError('tabs must be an array');
@@ -371,7 +337,6 @@ export async function* processTabBatch(tabs, size = 10) {
   }
 }
 
-// Add tag-related constants
 export const TAG_TYPES = Object.freeze({
   AUTOMATED: 'automated',
   MANUAL: 'manual'
@@ -398,29 +363,27 @@ export const VALIDATION = Object.freeze({
   }
 });
 
-// Add validation functions from tagUtils.js
 export function validateTag(tag) {
   if (!tag || typeof tag !== 'string') {
     throw new TypeError('Tag must be a non-empty string');
   }
-  if (!TAG_VALIDATION.TAG.PATTERN.test(tag)) {
+  if (!VALIDATION.TAG.PATTERN.test(tag)) {
     throw new Error('Tag contains invalid characters');
   }
-  if (tag.length > TAG_VALIDATION.TAG.MAX_LENGTH) {
-    throw new Error(`Tag exceeds maximum length of ${TAG_VALIDATION.TAG.MAX_LENGTH}`);
+  if (tag.length > VALIDATION.TAG.MAX_LENGTH) {
+    throw new Error(`Tag exceeds maximum length of ${VALIDATION.TAG.MAX_LENGTH}`);
   }
   return true;
 }
 
-export const validateRule = (rule) => {
+export function validateRule(rule) {
   const requiredFields = ['id', 'condition', 'action'];
   if (!requiredFields.every(field => field in rule)) {
     throw new Error('Invalid rule format');
   }
   return true;
-};
+}
 
-// Add tag-related operations
 export async function tagTab(tabId, tag) {
   validateTabId(tabId);
   validateTag(tag);
@@ -430,20 +393,17 @@ export async function tagTab(tabId, tag) {
   const updates = [];
   
   try {
-    // Prepare state update
     const stateUpdate = {
       tags: [...(originalTab.tags || []), tag],
       lastTagged: Date.now()
     };
     
-    // Update UI
     const updatedTab = await updateTab(tabId, { 
       title: `[${tag}] ${originalTab.title}` 
     });
     updates.push(['title', updatedTab]);
-    
-    // Update state
-    await store.dispatch(actions.tab.updateMetadata(tabId, stateUpdate));
+
+    await store.dispatch(actions.tabManagement.updateMetadata({ tabId, metadata: stateUpdate }));
     updates.push(['state', stateUpdate]);
     
     logger.logPerformance('tabTag', performance.now() - startTime, {
@@ -454,7 +414,6 @@ export async function tagTab(tabId, tag) {
     
     return updatedTab;
   } catch (error) {
-    // Rollback changes on failure
     logger.error('Tab tagging failed', {
       error: error.message,
       tabId,
@@ -462,14 +421,18 @@ export async function tagTab(tabId, tag) {
       type: 'TAB_TAG_ERROR'
     });
     
+    // Rollback logic
     for (const [type, data] of updates.reverse()) {
       try {
         if (type === 'title') {
           await updateTab(tabId, { title: originalTab.title });
         } else if (type === 'state') {
-          await store.dispatch(actions.tab.updateMetadata(tabId, {
-            tags: originalTab.tags || [],
-            lastTagged: originalTab.lastTagged
+          await store.dispatch(actions.tabManagement.updateMetadata({ 
+            tabId, 
+            metadata: {
+              tags: originalTab.tags || [],
+              lastTagged: originalTab.lastTagged
+            }
           }));
         }
       } catch (rollbackError) {
@@ -484,15 +447,6 @@ export async function tagTab(tabId, tag) {
   }
 }
 
-/**
- * Processes tabs in batches with progress tracking
- * @param {Array<browser.tabs.Tab>} tabs - Array of tabs to process
- * @param {Function} processor - Processing function for each tab
- * @param {Object} options - Processing options
- * @param {number} [options.batchSize=10] - Size of each batch
- * @param {Function} [options.onProgress] - Progress callback
- * @returns {Promise<Array>} Results of processing
- */
 export async function processTabs(tabs, processor, { 
   batchSize = CONFIG.BATCH.SIZE,
   onProgress,
@@ -569,7 +523,6 @@ export async function processTabs(tabs, processor, {
   return { results, errors };
 }
 
-// Add rule management functionality
 export const convertToDeclarativeRules = (rules) => {
   if (!Array.isArray(rules)) {
     throw new TypeError('Rules must be an array');
@@ -596,7 +549,7 @@ export const convertToDeclarativeRules = (rules) => {
 
 export const activateRules = async (rules) => {
   try {
-    const declarativeRules = await convertToDeclarativeRules(rules);
+    const declarativeRules = convertToDeclarativeRules(rules);
     await browser.declarativeNetRequest.updateDynamicRules({
       removeRuleIds: rules.map((_, i) => i + 1),
       addRules: declarativeRules
@@ -607,7 +560,6 @@ export const activateRules = async (rules) => {
   }
 };
 
-// Add rule application functionality
 export async function applyRulesToTab(tab, browserInstance, store) {
   if (!browserInstance?.declarativeNetRequest) {
     throw new Error("Declarative Net Request API not available");
@@ -633,17 +585,16 @@ export async function applyRulesToTab(tab, browserInstance, store) {
               timestamp: Date.now()
             };
 
-            await Promise.all([
-              archiveTabAction(tab.id, tag, tabData),
-              store.dispatch({ 
-                type: MESSAGE_TYPES.RULE_UPDATE,
-                payload: { 
-                  tag, 
-                  tabData,
-                  ruleId: rule.id
-                }
-              })
-            ]);
+            logger.info('Archiving tab due to rule match', { tabId: tab.id, tag });
+
+            await store.dispatch({ 
+              type: MESSAGE_TYPES.RULE_UPDATE,
+              payload: { 
+                tag, 
+                tabData,
+                ruleId: rule.id
+              }
+            });
             
             break;
           }
@@ -658,7 +609,6 @@ export async function applyRulesToTab(tab, browserInstance, store) {
   }
 }
 
-// Add batch processing for rules
 export async function* processRulesBatch(rules, size = 10) {
   for (let i = 0; i < rules.length; i += size) {
     yield rules.slice(i, i + size);
@@ -678,7 +628,7 @@ export async function processBatchOperations(operations) {
   });
 }
 
-// Add testing utilities
+// Testing utilities
 export const __testing__ = {
   validateTabId: (tabId) => {
     try {
@@ -702,7 +652,6 @@ export const __testing__ = {
     }
   },
   
-  // Add lifecycle test helpers
   testTabLifecycle: async (createProps) => {
     const tab = await createTab(createProps);
     await updateTab(tab.id, { title: 'Test Update' });
@@ -712,22 +661,7 @@ export const __testing__ = {
   }
 };
 
-// Public interface - explicit exports with documentation
+// Only exporting TAB_STATES to avoid confusion since we rely on store/actions for everything else
 export {
-  // Core Tab Operations
-  getTab,         // Fetches tab data
-  createTab,      // Creates new tab
-  updateTab,      // Updates existing tab
-  removeTab,      // Removes/closes tab
-  
-  // Tab State Management
-  updateTabMetadata,  // Updates tab metadata through background.js
-  discardTab,        // Discards tab with background.js validation
-  
-  // Batch Operations
-  processBatchOperations, // Processes multiple tab operations
-  
-  // Types & Constants
-  TAB_OPERATIONS,    // Valid tab operations
-  TAB_STATES        // Tab state constants
+  TAB_STATES
 };

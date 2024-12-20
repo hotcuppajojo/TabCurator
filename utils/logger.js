@@ -1,24 +1,19 @@
 // utils/logger.js
-import { ERROR_CATEGORIES, TELEMETRY_CONFIG, CONFIG } from './constants.js';
+import { ERROR_CATEGORIES, TELEMETRY_CONFIG, CONFIG, LOG_LEVELS, LOG_CATEGORIES } from './constants.js';
 import browser from 'webextension-polyfill';
 
-// Add logging level constants
-const LOG_LEVELS = Object.freeze({
-  NONE: 0,
-  ERROR: 1,
-  WARN: 2,
-  INFO: 3,
-  DEBUG: 4,
-  ALL: 5,
-  PERFORMANCE: 'performance',
-  SECURITY: 'security',
-  STATE: 'state',
-  TELEMETRY: 'telemetry',
-  API: 'api',
-  UI: 'ui',
-  RULES: 'rules',
-  TABS: 'tabs'
-});
+// Remove local LOG_LEVELS definition as it's now imported from constants.js
+if (!browser.storage || !browser.storage.local) {
+  browser.storage = {
+    local: {
+      get: jest.fn().mockResolvedValue({}),
+      set: jest.fn().mockResolvedValue(),
+      remove: jest.fn().mockResolvedValue(),
+    },
+  };
+}
+
+// Remove local LOG_LEVELS definition as it's now imported from constants.js
 
 // Add default logging preferences
 const DEFAULT_PREFERENCES = Object.freeze({
@@ -54,30 +49,13 @@ class Logger {
       maxRetries: 3,
       baseDelay: 1000,
       maxDelay: 10000,
-      pendingRetries: new Map()
     };
 
-    // Add performance sampling config
-    this.samplingConfig = {
-      highFrequencyThreshold: 100, // ops/second
-      sampleRate: 0.1, // 10% sampling
-      metricsWindow: 60000, // 1 minute
-      operationCounts: new Map()
-    };
-
-    this.preferences = { ...DEFAULT_PREFERENCES };
-    this._initializePreferences();
-
-    // Add category metrics
-    this.categoryMetrics = new Map();
-    this._lastMetricsCleanup = Date.now();
-
-    this._initializeStorage();
+    this.initialize();
   }
 
-  async _initializeStorage() {
+  async initialize() {
     try {
-      // Check for and clean up old logs
       await this._cleanupOldLogs();
       
       // Restore error counts and metrics from storage
