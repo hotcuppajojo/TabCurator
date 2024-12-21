@@ -6,7 +6,7 @@
  */
 
 import browser from 'webextension-polyfill';
-import { MESSAGE_TYPES } from '../utils/constants.js';
+import { MESSAGE_TYPES, TAB_OPERATIONS } from '../utils/constants.js'; // Add TAB_OPERATIONS import
 
 // Debounce helper
 const debounce = (fn, delay) => {
@@ -21,13 +21,18 @@ const debounce = (fn, delay) => {
 const reportActivity = debounce(async () => {
   try {
     await browser.runtime.sendMessage({
-      type: MESSAGE_TYPES.STATE_UPDATE,
-      action: 'updateActivity',
-      payload: { timestamp: Date.now() }
+      type: MESSAGE_TYPES.TAB_ACTION,
+      action: TAB_OPERATIONS.UPDATE,
+      payload: {
+        tabId: null, // Will be resolved to current tab
+        properties: {
+          lastAccessed: Date.now()
+        }
+      }
     });
   } catch (error) {
     if (!error.message.includes('Extension context invalidated')) {
-      console.warn('Failed to report activity:', error);
+      logger.warn('Failed to report activity:', error);
     }
   }
 }, 1000);

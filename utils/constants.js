@@ -88,19 +88,19 @@ export const TAB_STATES = Object.freeze({
 });
 
 export const MESSAGE_TYPES = Object.freeze({
-  STATE_SYNC: 'STATE_SYNC',
   CONNECTION_ACK: 'CONNECTION_ACK',
   ERROR: 'ERROR',
-  TAB_ACTION: 'TAB_ACTION',
+  GET_SESSIONS: 'GET_SESSIONS',
+  INIT_CHECK: 'INIT_CHECK',
+  RULE_UPDATE: 'RULE_UPDATE', 
   STATE_UPDATE: 'STATE_UPDATE',
-  RULE_UPDATE: 'RULE_UPDATE',
-  SESSION_ACTION: 'SESSION_ACTION',
+  STATE_SYNC: 'STATE_SYNC',
   SERVICE_WORKER_UPDATE: 'SERVICE_WORKER_UPDATE',
+  SESSION_ACTION: 'SESSION_ACTION',
+  TAB_ACTION: 'TAB_ACTION',
   TAG_ACTION: 'TAG_ACTION',
-  TEST_ACTION: 'TEST_ACTION',       // Ensure TEST_ACTION is defined
-  TEST_MESSAGE: 'TEST_MESSAGE',      // Ensure TEST_MESSAGE is defined
-  GET_SESSIONS: 'GET_SESSIONS', // Added GET_SESSIONS message type
-  INIT_CHECK: 'INIT_CHECK',  // Add this new message type
+  TEST_ACTION: 'TEST_ACTION', 
+  TEST_MESSAGE: 'TEST_MESSAGE', 
 });
 
 export const ERROR_TYPES = Object.freeze({
@@ -332,14 +332,16 @@ export const TAB_PERMISSIONS = Object.freeze({
 });
 
 export const TAB_OPERATIONS = Object.freeze({
-  DISCARD: 'discard',
-  BOOKMARK: 'bookmark',
-  ARCHIVE: 'archive',
-  UPDATE: 'update',
-  TAG_AND_CLOSE: 'tagAndClose',
-  GET_OLDEST: 'getOldestTab',
-  CHECK_LIMIT: 'checkTabLimit',
-  ENFORCE_LIMIT: 'enforceTabLimit'
+  DISCARD: 'DISCARD',
+  BOOKMARK: 'BOOKMARK',
+  ARCHIVE: 'ARCHIVE',
+  UPDATE: 'UPDATE',
+  TAG_AND_CLOSE: 'TAG_AND_CLOSE',
+  GET_OLDEST: 'GET_OLDEST',
+  CHECK_LIMIT: 'CHECK_LIMIT',
+  ENFORCE_LIMIT: 'ENFORCE_LIMIT',
+  SUSPEND_INACTIVE: 'SUSPEND_INACTIVE',
+  SUSPEND: 'SUSPEND'
 });
 
 export const INACTIVITY_THRESHOLDS = {
@@ -375,7 +377,8 @@ export const TAG_VALIDATION = Object.freeze({
 });
 
 export const BOOKMARK_CONFIG = Object.freeze({
-  FOLDER_NAME: 'TabCurator'
+  FOLDER_NAME: 'TabCurator',
+  DEFAULT_FOLDER_ID: null // Will be set during initialization
 });
 
 export const TAB_LIMITS = Object.freeze({

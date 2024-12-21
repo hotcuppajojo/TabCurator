@@ -3,7 +3,7 @@ import browser from 'webextension-polyfill';
 import stateManager from '../utils/stateManager.js'; // Ensure default import
 import { connection } from '../utils/connectionManager.js';
 import { tabManager } from '../utils/tabManager.js';
-import { CONFIG, MESSAGE_TYPES, SERVICE_TYPES } from '../utils/constants.js';
+import { MESSAGE_TYPES } from '../utils/constants.js';
 import { logger } from '../utils/logger.js'; // Add logger import
 
 // Polyfill requestIdleCallback if it doesn't exist
@@ -36,21 +36,15 @@ const background = {
     if (initialized) return true;
     
     try {
-      // 1. Initialize state manager first
-      await stateManager.initialize();
-      logger.info('StateManager initialized', stateManager);
-
-      // 2. Initialize tab manager with stateManager reference  
+      // Sequential initialization
+      await stateManager.initialize(tabManager);
       await tabManager.initialize(stateManager);
-      logger.info('TabManager initialized', tabManager);
-
-      // 3. Initialize connection manager last
       await connection.initialize(stateManager);
-      logger.info('Connection manager initialized', connection);
-
-      // 4. Mark initialization complete
+      
+      this.setupMessageHandling();
       initialized = true;
-
+      
+      await this.broadcastInitialized();
       return true;
     } catch (error) {
       logger.error('Background initialization failed:', error);
@@ -58,11 +52,77 @@ const background = {
     }
   },
 
-  isInitialized() {
-    return initialized;
-  },
-
   setupMessageHandling() {
+    browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      // 1. Init check handling
+      if (message.type === MESSAGE_TYPES.INIT_CHECK) {
+        sendResponse({ initialized });
+        return true;
+      }
+
+      if (!initialized) {
+        sendResponse({ error: 'Service not initialized' });
+        return true;
+      }
+
+      // 2. Enhanced tab action handling with proper response flow
+      if (message.type === MESSAGE_TYPES.TAB_ACTION) {
+        const handleTabAction = async () => {
+          try {
+            logger.debug(`Processing tab action: ${message.action}`);
+            const response = await connection.handleMessage(message, sender);
+
+            if (!response) {
+              throw new Error(`No response from tab action: ${message.action}`);
+            }
+
+            logger.debug('Tab action response:', response);
+            sendResponse(response);
+          } catch (error) {
+            logger.error('Tab action failed:', error);
+            sendResponse({
+              error: error.message || 'Tab action failed',
+              success: false
+            });
+          }
+        };
+
+        handleTabAction().catch(error => {
+          logger.error('Unhandled tab action error:', error);
+          sendResponse({
+            error: 'Internal error processing tab action',
+            success: false
+          });
+        });
+
+        return true; // Keep message channel open
+      }
+
+      // 3. General message handling
+      const handleMessage = async () => {
+        try {
+          const response = await connection.handleMessage(message, sender);
+          sendResponse(response || { success: true });
+        } catch (error) {
+          logger.error('Message handling failed:', error);
+          sendResponse({
+            error: error.message || 'Message handling failed',
+            success: false
+          });
+        }
+      };
+
+      handleMessage().catch(error => {
+        logger.error('Unhandled message error:', error);
+        sendResponse({
+          error: 'Internal error processing message',
+          success: false
+        });
+      });
+
+      return true; // Keep message channel open
+    });
+
     browser.runtime.onConnect.addListener((port) => {
       if (!initialized) {
         port.postMessage({ error: 'Service not initialized' });
@@ -70,32 +130,22 @@ const background = {
       }
       connection.handlePort(port);
     });
+  },
 
-    browser.runtime.onMessage.addListener(async (message, sender) => {
-      try {
-        // Always allow init check
-        if (message.type === MESSAGE_TYPES.INIT_CHECK) {
-          return { initialized };
-        }
-
-        if (!initialized) {
-          return { error: 'Service not initialized' };
-        }
-
-        const response = await connection.handleMessage(message, sender);
-        return response; // Ensure the response is returned
-      } catch (error) {
-        logger.error('Handle Message Error:', { error: error.message });
-        return { error: error.message };
-      }
-    });
+  async broadcastInitialized() {
+    try {
+      await browser.runtime.sendMessage({
+        type: MESSAGE_TYPES.INIT_CHECK,
+        payload: { initialized: true }
+      });
+    } catch (error) {
+      // Ignore errors from no listeners
+    }
   }
 };
 
-// Initialize background and setup message handling
-background.initBackground().then(() => {
-  background.setupMessageHandling();
-}).catch(error => {
+// Initialize and export for testing
+background.initBackground().catch(error => {
   logger.error('Failed to initialize background:', error);
 });
 

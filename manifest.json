@@ -4,14 +4,17 @@
   "version": "0.1.0",
   "description": "Advanced tab management with intelligent grouping and optimization",
   "permissions": [
-    "tabs",
-    "storage",
-    "alarms",
-    "scripting",
     "activeTab",
+    "alarms",
+    "background",
     "bookmarks",
     "declarativeNetRequest",
-    "background"
+    "storage",
+    "sessions",
+    "scripting",
+    "tabs",
+    "tabGroups",
+    "webNavigation"
   ],
   "background": {
     "service_worker": "background/background.js",

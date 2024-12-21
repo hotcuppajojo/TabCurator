@@ -28,6 +28,7 @@ import {
   SERVICE_TYPES,
   CONFIG,
   BATCH_CONFIG,
+  TAB_OPERATIONS,
   coreSelectors,
   VALIDATION_SCHEMAS,
   selectors
@@ -589,7 +590,8 @@ class StateManager {
     StateManager.instance = this;
   }
 
-  async initialize() {
+  async initialize(tabManager) {
+    this.tabManager = tabManager;
     if (this.initialized) return true;
 
     // Initialize Redux store if needed
@@ -696,6 +698,126 @@ class StateManager {
       ...local,
       lastResolved: Date.now()
     };
+  }
+
+  async getSessions() {
+    if (!this.initialized || !this.store) {
+      throw new Error('StateManager not initialized');
+    }
+    return this.store.getState().sessions || [];
+  }
+
+  async getSessionsState() {
+    const state = this.store.getState();
+    return {
+      sessions: state.sessions,
+      savedSessions: state.savedSessions
+    };
+  }
+
+  async handleSessionMessage(message) {
+    if (!this.initialized || !this.store) {
+      return { error: 'StateManager not initialized' };
+    }
+
+    try {
+      const { action, payload } = message;
+      logger.debug('Processing session message:', { action, payload });
+      
+      switch (action) {
+        case 'saveSession': {
+          if (!payload?.name || !payload?.tabs) {
+            return { error: 'Invalid session data' };
+          }
+          
+          const session = {
+            name: payload.name,
+            tabs: payload.tabs,
+            timestamp: payload.timestamp || Date.now()
+          };
+          
+          this.store.dispatch(actions.session.saveSession(session));
+          logger.debug('Session saved:', session);
+          
+          // Optionally await if dispatch is asynchronous
+          // await this.store.dispatch(actions.session.saveSession(session));
+          
+          return { success: true, session };
+        }
+
+        case 'restoreSession': {
+          if (!payload?.sessionName) {
+            return { error: 'Session name required' };
+          }
+          // Implement restore logic
+          this.store.dispatch(actions.session.restoreSession(payload.sessionName));
+          logger.debug(`Session "${payload.sessionName}" restored.`);
+          return { success: true };
+        }
+
+        case 'getSession':
+        case 'getSessions': {
+          const state = this.store.getState();
+          return {
+            success: true,
+            sessions: state.sessions || [],
+            savedSessions: state.savedSessions
+          };
+        }
+
+        default:
+          logger.warn('Unknown session action:', { action });
+          return { error: 'Unknown session action' };
+      }
+    } catch (error) {
+      logger.error('Session handling error:', error);
+      return { error: error.message };
+    }
+  }
+
+  async handleTabAction(message) {
+    try {
+      const { action, payload } = message;
+      switch (action) {
+        case 'SUSPEND_INACTIVE':
+          return await this.tabManager.suspendInactiveTabs();
+        case 'GET_OLDEST':
+          return await this.tabManager.getOldestTab();
+        // Add other cases as needed
+        default:
+          logger.warn(`Unhandled action type: ${action}`);
+          return { error: `Unhandled action type: ${action}` };
+      }
+    } catch (error) {
+      logger.error('Error in handleTabAction:', error);
+      return { error: error.message || 'handleTabAction failed' };
+    }
+  }
+
+  async handleTagAction(message) {
+    const { operation, tabId, tag } = message;
+    try {      
+      switch (operation) {
+        case TAG_OPERATIONS.ADD:
+          await this.tabManager.addTagToTab(tabId, tag);
+          return { success: true };
+          
+        case TAG_OPERATIONS.REMOVE:
+          await this.tabManager.removeTagFromTab(tabId, tag);
+          return { success: true };
+          
+        case TAG_OPERATIONS.UPDATE:
+          await this.tabManager.updateTagOnTab(tabId, tag);
+          return { success: true };
+          
+        default:
+          logger.warn(`Unhandled tag operation: ${operation}`);
+          return { error: `Unhandled tag operation: ${operation}` };
+      }
+    } catch (error) {
+      logger.error('Error handling tag action:', error);
+      return { error: error.message };
+    }
   }
 }
 

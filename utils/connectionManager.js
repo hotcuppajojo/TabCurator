@@ -20,7 +20,6 @@ import {
   TELEMETRY_CONFIG,
   STORAGE_CONFIG,
   TAB_OPERATIONS,
-  TAG_OPERATIONS,
   TAB_STATES,
   VALIDATION_SCHEMAS
 } from './constants.js';
@@ -514,12 +513,28 @@ class ConnectionManager {
       await this.syncState();
       return { success: true };
     },
-    [MESSAGE_TYPES.TAB_ACTION]: async (payload) => {
-      const response = await this._handleTabAction(payload);
-      return response;
+    [MESSAGE_TYPES.TAB_ACTION]: async (message) => {
+      const { action, payload } = message;
+      
+      try {
+        const response = await this.stateManager.handleTabAction(message);
+        
+        // If the response indicates an error but succeeded anyway
+        if (!response.success && !response.error) {
+          return { success: false, error: 'Operation failed' };
+        }
+        
+        return response;
+      } catch (error) {
+        logger.error('Tab action failed', {
+          action,
+          error: error.message
+        });
+        return { success: false, error: error.message };
+      }
     },
     [MESSAGE_TYPES.TAG_ACTION]: async (payload) => {
-      const response = await this._handleTagAction(payload);
+      const response = await this.stateManager.handleTagAction(payload);
       return response;
     },
     [MESSAGE_TYPES.SESSION_ACTION]: async (payload) => {
@@ -539,47 +554,27 @@ class ConnectionManager {
 
   // Update the handleMessage method to invoke callbacks
   async handleMessage(message, senderPort) {
-    await this.validateMessage(message);
-    
+    logger.debug('handleMessage called with message:', message); // Added logging
+    if (!message || !message.type) {
+      logger.warn('handleMessage received invalid message:', message); // Added logging
+      return { error: 'Invalid message format' };
+    }
+
     const handler = this._messageHandlers[message.type];
     if (!handler) {
-      // Return a standardized error response for unhandled message types
-      return { error: `Unhandled message type: ${message.type}` };
+      logger.warn(`No handler found for message type: ${message.type}`); // Added logging
+      return { error: `No handler for message type: ${message.type}` };
     }
 
     try {
-      // Execute handler to get result
-      const result = await this._measurePerformance(
-        () => handler(message.payload, senderPort),
-        'MESSAGE_PROCESSING'
-      );
-
-      // Ensure the handler returns a response object
-      if (typeof result !== 'object' || result === null) {
-        return { error: 'Handler did not return a valid response object' };
-      }
-
-      // Then invoke any registered callbacks
-      const connectionId = this._findConnectionIdByPort(senderPort);
-      const callback = this.messageCallbacks.get(connectionId);
-      if (callback) {
-        callback(message);
-      }
-
-      return result;
+      logger.info(`Handling message type: ${message.type}`); // Added logging
+      const response = await handler(message.payload);
+      logger.info(`Message type ${message.type} handled successfully with response:`, response); // Added logging
+      return response;
     } catch (error) {
-      // Return error in a standardized response object
-      return { error: error.message || 'An unknown error occurred' };
+      logger.error(`Error handling message type ${message.type}:`, error); // Added logging
+      return { error: error.message };
     }
-  }
-
-  _findConnectionIdByPort(port) {
-    for (const [id, info] of this.connectionMetrics.activeConnections) {
-      if (info.port === port) {
-        return id; // Return the connection ID if port matches
-      }
-    }
-    return null;
   }
 
   async syncState() {
@@ -1143,42 +1138,6 @@ class ConnectionManager {
     });
   }
 
-  async _handleTabAction(payload) {
-    if (!payload || !payload.action || !payload.tabId) {
-      return { error: 'Invalid payload for TAB_ACTION' };
-    }
-
-    const { action, tabId } = payload;
-    switch (action) {
-      case TAB_OPERATIONS.DISCARD:
-        await discardTab(tabId);
-        return { success: true };
-      case TAB_OPERATIONS.UPDATE:
-        if (payload.updates) {
-          await updateTab(tabId, payload.updates);
-          return { success: true };
-        }
-        return { error: 'No updates provided' };
-      case TAB_OPERATIONS.ARCHIVE:
-        await updateTab(tabId, { state: TAB_STATES.ARCHIVED });
-        return { success: true };
-      case TAB_OPERATIONS.TAG_AND_CLOSE:
-        if (payload.tag) {
-          const tab = await getTab(tabId);
-          const updatedTags = [...(tab.tags || []), payload.tag];
-          await updateTab(tabId, { tags: updatedTags, state: TAB_STATES.ARCHIVED });
-          await browser.tabs.remove(tabId);
-          return { success: true };
-        }
-        return { error: 'No tag provided' };
-      case TAB_OPERATIONS.GET_OLDEST:
-        const state = this.stateManager.getState();
-        return { tab: state.tabManagement?.oldestTab || null };
-      default:
-        return { error: `Unhandled TAB_ACTION: ${action}` };
-    }
-  }
-
   async _handleTagAction(payload) {
     if (!payload || !payload.operation || !payload.tabId || !payload.tag) {
       return { error: 'Invalid payload for TAG_ACTION' };
@@ -1309,36 +1268,9 @@ class ConnectionManager {
     return true;
   }
 
-  async handleMessage(message, sender, stateManagerInstance = this.stateManager) {
-    if (!this.initialized || !stateManagerInstance?.initialized) {
-      return { error: 'ConnectionManager or StateManager not initialized' };
-    }
-
-    if (!this.stateManager) {
-      throw new Error('StateManager not initialized');
-    }
-
-    switch (message.type) {
-      case MESSAGE_TYPES.GET_SESSIONS:
-        try {
-          const state = this.stateManager.getState();
-          const sessions = state.sessions || [];
-          return { sessions };
-        } catch (error) {
-          return { error: error.message };
-        }
-
-      case MESSAGE_TYPES.SESSION_ACTION:
-        try {
-          const result = await this.stateManager.handleSessionAction(message.payload);
-          return result;
-        } catch (error) {
-          return { error: error.message };
-        }
-
-      default:
-        return { error: `Unhandled message type: ${message.type}` };
-    }
+  async handleMessage(message, sender) {
+    // Avoid circular imports by interacting through stateManager singleton
+    return stateManager.handleTabAction(message);
   }
 
   handlePortConnection(port) {
@@ -1417,17 +1349,11 @@ export async function initializeConnection(messageHandler) {
 }
 
 export async function createAlarm(name, alarmInfo) {
-  if (!browser.alarms) {
-    throw new Error('Alarms API not available');
-  }
-  await browser.alarms.create(name, alarmInfo);
+  return connection.createAlarm(name, alarmInfo);
 }
 
 export async function onAlarm(callback) {
-  if (!browser.alarms) {
-    throw new Error('Alarms API not available');
-  }
-  browser.alarms.onAlarm.addListener(callback);
+  return connection.onAlarm(callback);
 }
 
 export async function processBatchMessages(messages, { 
@@ -1450,4 +1376,3 @@ if (typeof window !== 'undefined') {
     connection.recoverFromCrash().catch(console.error);
   });
 }
-

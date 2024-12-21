@@ -324,6 +324,74 @@ describe('Connection Manager Unit Tests', () => {
         .rejects
         .toThrow(/type is a required field/);
     });
+
+    test('should validate tab action messages', async () => {
+      const validMessage = {
+        type: MESSAGE_TYPES.TAB_ACTION,
+        action: TAB_OPERATIONS.SUSPEND_INACTIVE,
+        payload: {}
+      };
+      
+      const result = await connection.validateMessage(validMessage);
+      expect(result).toBe(true);
+    });
+
+    test('should reject invalid tab action messages', async () => {
+      const invalidMessage = {
+        type: MESSAGE_TYPES.TAB_ACTION,
+        action: 'INVALID_ACTION',
+        payload: {}
+      };
+      
+      await expect(connection.validateMessage(invalidMessage))
+        .rejects
+        .toThrow(/Invalid TAB_ACTION/);
+    });
+  });
+
+  describe('handleTabAction', () => {
+    test('should handle SUSPEND_INACTIVE action correctly', async () => {
+      const mockSuspendInactiveTabs = jest.spyOn(tabManager, 'suspendInactiveTabs').mockResolvedValue({ success: true });
+      
+      const message = {
+        type: MESSAGE_TYPES.TAB_ACTION,
+        action: TAB_OPERATIONS.SUSPEND_INACTIVE,
+        payload: {}
+      };
+      
+      const result = await connectionManager.handleTabAction(message);
+      expect(mockSuspendInactiveTabs).toHaveBeenCalled();
+      expect(result).toEqual({ success: true });
+      
+      mockSuspendInactiveTabs.mockRestore();
+    });
+    
+    test('should return error for unknown tab action', async () => {
+      const message = {
+        type: MESSAGE_TYPES.TAB_ACTION,
+        action: 'UNKNOWN_ACTION',
+        payload: {}
+      };
+      
+      const result = await connectionManager.handleTabAction(message);
+      expect(result).toEqual({ error: 'Unknown tab action: UNKNOWN_ACTION' });
+    });
+    
+    test('should handle errors gracefully', async () => {
+      const mockSuspendInactiveTabs = jest.spyOn(tabManager, 'suspendInactiveTabs').mockRejectedValue(new Error('Test Error'));
+      
+      const message = {
+        type: MESSAGE_TYPES.TAB_ACTION,
+        action: TAB_OPERATIONS.SUSPEND_INACTIVE,
+        payload: {}
+      };
+      
+      const result = await connectionManager.handleTabAction(message);
+      expect(mockSuspendInactiveTabs).toHaveBeenCalled();
+      expect(result).toEqual({ error: 'Test Error' });
+      
+      mockSuspendInactiveTabs.mockRestore();
+    });
   });
 
   describe('initialization and configuration', () => {

@@ -1,3 +1,4 @@
+// utils/tabManager.js
 /**
  * @fileoverview Tab Manager Module - Handles tab operations with background.js coordination
  */
@@ -9,18 +10,11 @@ import {
   CONFIG,
   VALIDATION_TYPES,
   BOOKMARK_CONFIG,
-  MESSAGE_TYPES 
+  MESSAGE_TYPES,
+  TAB_OPERATIONS  // Import TAB_OPERATIONS from constants
 } from './constants.js';
 
 let stateManager; // Will be initialized later
-
-// Operations defined for tabs
-export const TAB_OPERATIONS = Object.freeze({
-  DISCARD: 'discard',
-  BOOKMARK: 'bookmark',
-  ARCHIVE: 'archive',
-  UPDATE: 'update'
-});
 
 export const INACTIVITY_THRESHOLDS = {
   PROMPT: 600000, // 10 minutes
@@ -187,32 +181,41 @@ export async function removeTab(tabId) {
  * @param {Object} [criteria] - Optional criteria
  * @returns {Promise<void>}
  */
-export async function discardTab(tabId, criteria) {
+export async function discardTab(tabId) {
   const startTime = performance.now();
   try {
-    await browser.runtime.sendMessage({
-      type: MESSAGE_TYPES.TAB_ACTION,
-      action: 'discard',
-      payload: { tabId, criteria }
-    });
+    // First validate the tab exists and can be discarded
+    const tab = await browser.tabs.get(tabId);
+    if (!tab) {
+      throw new Error(`Tab ${tabId} not found`);
+    }
+
+    // Check if tab is discardable
+    if (tab.active || tab.pinned || tab.audible || tab.discarded) {
+      logger.info('Tab cannot be discarded:', {
+        tabId,
+        active: tab.active,
+        pinned: tab.pinned,
+        audible: tab.audible,
+        discarded: tab.discarded
+      });
+      return { success: false, reason: 'Tab cannot be discarded' };
+    }
+
+    // Try to discard the tab
+    await browser.tabs.discard(tabId);
     
     const duration = performance.now() - startTime;
     logger.logPerformance('tabDiscard', duration, { tabId });
     
-    // Telemetry feedback loop - if rule priority adjustments needed
-    if (duration > CONFIG.THRESHOLDS.TAB_DISCARD) {
-      stateManager.dispatch(stateManager.actions.rules.updateRulesPriority && stateManager.actions.rules.updateRulesPriority({
-        type: 'discard',
-        adjustment: 'decrease'
-      }));
-    }
+    return { success: true, tabId };
   } catch (error) {
     logger.error('Failed to discard tab', {
       tabId,
       error: error.message,
       type: 'TAB_DISCARD'
     });
-    throw error;
+    return { success: false, error: error.message };
   }
 }
 
@@ -825,16 +828,92 @@ export class TabManager {
       return [];
     }
   }
+
+  /**
+   * Gets the oldest inactive tab.
+   * @returns {Promise<Object>} The oldest inactive tab.
+   */
+  async getOldestTab() {
+    try {
+      const tabs = await browser.tabs.query({});
+      if (tabs.length === 0) return null;
+      // Assuming tabs are sorted by creation time
+      const oldestTab = tabs.reduce((oldest, current) => {
+        return (current.index < oldest.index) ? current : oldest;
+      }, tabs[0]);
+      return oldestTab;
+    } catch (error) {
+      logger.error('Error retrieving oldest tab:', error);
+      return { error: error.message || 'Failed to retrieve oldest tab' };
+    }
+  }
+
+  /**
+   * Suspends inactive tabs by bookmarking them and discarding.
+   * @returns {Promise<Object>} Result of the suspension process.
+   */
+  async suspendInactiveTabs() {
+    try {
+      const inactiveTabs = await this.getInactiveTabs();
+
+      // Get or create TabCurator folder
+      let folder = null;
+      const folders = await browser.bookmarks.search({ title: BOOKMARK_CONFIG.FOLDER_NAME });
+      
+      if (folders.length === 0) {
+        folder = await browser.bookmarks.create({ title: BOOKMARK_CONFIG.FOLDER_NAME });
+      } else {
+        folder = folders[0];
+      }
+
+      // Process each inactive tab
+      const results = await Promise.allSettled(
+        inactiveTabs.map(async (tab) => {
+          try {
+            // Create bookmark first
+            await browser.bookmarks.create({
+              parentId: folder.id,
+              title: tab.title,
+              url: tab.url
+            });
+
+            // Remove the tab after bookmarking
+            await browser.tabs.remove(tab.id);
+
+            logger.info(`Suspended and bookmarked tab: ${tab.id}`);
+            return { success: true, tabId: tab.id };
+          } catch (error) {
+            logger.error('Failed to suspend tab:', { 
+              tabId: tab.id, 
+              error: error.message 
+            });
+            return { success: false, error: error.message };
+          }
+        })
+      );
+
+      const successCount = results.filter(r => r.value?.success).length;
+      
+      return {
+        success: true,
+        suspendedCount: successCount,
+        results: results.map(r => r.status === 'fulfilled' ? r.value : { 
+          success: false, 
+          error: r.reason?.message 
+        })
+      };
+    } catch (error) {
+      logger.error('Error suspending inactive tabs:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getInactiveTabs() {
+    // filter out active or pinned tabs
+    const allTabs = await browser.tabs.query({});
+    return allTabs.filter(tab => !tab.active && !tab.pinned);
+  }
 }
-
-// Export a singleton instance of TabManager
-const tabManager = new TabManager();
-export { tabManager };
-
-// Only exporting TAB_STATES to avoid confusion since we rely on store/actions for everything else
-export {
-  TAB_STATES
-};
 
 export async function initialize() {
   if (!stateManager) {
@@ -846,3 +925,11 @@ export async function initialize() {
   logger.info('Tab manager initialized', stateManager.store);
 }
 
+// Export a singleton instance of TabManager
+const tabManager = new TabManager();
+export { tabManager };
+
+// Only exporting TAB_STATES to avoid confusion since we rely on store/actions for everything else
+export {
+  TAB_STATES
+};

@@ -2,12 +2,13 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom';
 import { Provider } from 'react-redux';
-import { store } from '../utils/stateManager.js';
-import { connection } from '../utils/connectionManager.js';
+import stateManager from '../utils/stateManager.js';
+import { connection } from '../utils/connectionManager.js'; // Updated import
 import browser from 'webextension-polyfill';
 import { useDispatch, useSelector } from 'react-redux';
-import { MESSAGE_TYPES, TAB_OPERATIONS, CONFIG } from '../utils/constants.js';
+import { MESSAGE_TYPES, TAB_OPERATIONS, ACTION_TYPES } from '../utils/constants.js';
 import TabLimitPrompt from './TabLimitPrompt.jsx';
+import { logger } from '../utils/logger.js'; // Add logger import
 
 const Popup = () => {
   const [tabs, setTabs] = useState([]);
@@ -150,21 +151,21 @@ const Popup = () => {
     };
   }, [maxTabs, connectionId]);
 
-  useEffect(() => {
-    // Expose logger to the popup's window for console access
-    if (process.env.NODE_ENV !== 'production') {
-      window.tabCuratorLogger = logger;
-      console.info('tabCuratorLogger is available in the popup console.');
-    }
-  }, []);
-
+  // Updated sendMessage function
   const sendMessage = async (message) => {
-    if (!connectionId) throw new Error('No active connection');
     try {
       const response = await connection.sendMessage(connectionId, message);
+      if (!response) {
+        throw new Error('No response received');
+      }
+  
+      if (response.error) {
+        throw new Error(response.error);
+      }
+  
       return response;
     } catch (error) {
-      console.error('Send Message Error:', error);
+      logger.error('Send Message Error:', error); // Replace console.error
       throw error;
     }
   };
@@ -174,8 +175,9 @@ const Popup = () => {
       setErrorMsg('');
       const fetchedTabs = await browser.tabs.query({});
       setTabs(fetchedTabs);
+      logger.info('Tabs loaded successfully.'); // Add logging
     } catch (error) {
-      console.error('Error loading tabs:', error);
+      logger.error('Error loading tabs:', error); // Replace console.error
       setErrorMsg('Error loading tabs');
     }
   };
@@ -185,100 +187,65 @@ const Popup = () => {
   };
 
   const suspendInactiveTabs = async () => {
-    if (!connected) {
-      console.error('Not connected');
-      return;
-    }
-    
     try {
       const response = await sendMessage({
         type: MESSAGE_TYPES.TAB_ACTION,
         action: TAB_OPERATIONS.SUSPEND_INACTIVE,
-        payload: { operation: 'SUSPEND_INACTIVE' }
+        payload: {} // Empty payload for this operation
       });
-
-      if (response && response.error) { // Added check for response existence
-        setErrorMsg(response.error);
-        return;
+      if (response.success) {
+        logger.info(`Suspended ${response.suspendedTabs} inactive tabs.`);
       }
-
-      console.log('Successfully sent suspend message');
-      await loadTabs();
+      await loadTabs(); // Refresh UI after operation
     } catch (error) {
-      console.error('Error suspending tabs:', error);
-      setErrorMsg('Error suspending tabs: ' + error.message);
+      logger.error('Failed to suspend tabs:', error);
+      setErrorMsg(error.message);
     }
   };
 
   const saveSession = async () => {
-    if (!connected || !connectionId) {
-      setErrorMsg('Not connected');
-      return;
-    }
-
     const sessionName = prompt('Enter a name for this session:');
-    if (sessionName) {
-      try {
-        await connection.sendMessage(connectionId, {
-          type: MESSAGE_TYPES.SESSION_ACTION,
-          action: 'saveSession',
-          payload: { sessionName }
-        });
-        
-        console.log(`Session "${sessionName}" saved successfully.`);
-        await loadSessions(); // Refresh sessions list
-      } catch (error) {
-        console.error('Error saving session:', error);
-        setErrorMsg('Error saving session');
-      }
+    if (!sessionName?.trim()) return;
+
+    try {
+      await sendMessage({
+        type: MESSAGE_TYPES.SESSION_ACTION,
+        action: ACTION_TYPES.SESSION.SAVE_SESSION,
+        payload: { name: sessionName }
+      });
+      await loadSessions();
+    } catch (error) {
+      logger.error('Failed to save session:', error);
+      setErrorMsg(error.message);
     }
   };
 
   const loadSessions = async () => {
     try {
-      setErrorMsg('');
-      console.log('Sending getSessions message...');
-      
+      logger.info('Sending getSessions message...');
       const response = await sendMessage({
         type: MESSAGE_TYPES.GET_SESSIONS,
-        payload: {} // Ensure payload is present
+        payload: {}
       });
-
-      if (!response) { // Added check for undefined response
-        setErrorMsg('Received undefined response from getSessions');
-        setSessions([]);
-        return;
-      }
-      
-      if (response.error) {
-        setErrorMsg(response.error);
-        setSessions([]);
-        return;
-      }
-
-      console.log('Raw sessions response:', response);
-      const sessions = response.sessions || [];
-      console.log('Processed sessions:', sessions);
-      setSessions(sessions);
-      
+      setSessions(response.sessions || []);
     } catch (error) {
-      console.error('Error loading sessions:', error);
-      setErrorMsg('Error loading sessions');
+      logger.error('Failed to load sessions:', error);
+      setErrorMsg(error.message);
       setSessions([]);
     }
   };
 
   const restoreSession = async (sessionName) => {
     try {
-      await sendMessage({
+      const message = {
         type: MESSAGE_TYPES.SESSION_ACTION,
-        action: 'restoreSession',
+        action: ACTION_TYPES.SESSION.RESTORE_SESSION,
         payload: { sessionName }
-      });
-      console.log(`Session "${sessionName}" restored successfully.`);
+      };
+      await sendMessage(message);
+      logger.info(`Session "${sessionName}" restored successfully.`);
     } catch (error) {
-      console.error(`Error restoring session "${sessionName}":`, error);
-      setErrorMsg('Error restoring session');
+      logger.error(`Error restoring session "${sessionName}":`, error);
     }
   };
 
@@ -293,20 +260,43 @@ const Popup = () => {
       setIsTaggingPromptVisible(false);
       await loadTabs();
     } catch (error) {
-      setErrorMsg(`Failed to tag and close tab: ${error.message}`);
+      logger.error(`Failed to tag tab: ${error.message}`);
     }
   };
   
   const openOptions = async () => {
-    console.log('Opening options page...');
+    logger.info('Opening options page...'); 
     try {
       await browser.runtime.openOptionsPage();
     } catch (error) {
-      console.error('Failed to open options:', error);
+      logger.error('Failed to open options:', error);
       const url = browser.runtime.getURL('options/options.html');
-      console.log('Trying fallback with URL:', url);
+      logger.info('Trying fallback with URL:', url);
       await browser.tabs.create({ url });
     }
+  };
+
+  const renderSessions = () => {
+    if (!sessions.length) {
+      return <div className="no-sessions">No saved sessions</div>;
+    }
+
+    return (
+      <div id="sessionsList" className="sessions-list">
+        {sessions.map((sessionName) => (
+          <div key={sessionName} className="session-item">
+            <span className="session-name">{sessionName}</span>
+            <button
+              onClick={() => restoreSession(sessionName)}
+              className="restore-button"
+              aria-label={`Restore session: ${sessionName}`}
+            >
+              Restore
+            </button>
+          </div>
+        ))}
+      </div>
+    );
   };
 
   return (
@@ -341,21 +331,24 @@ const Popup = () => {
         {errorMsg && <div className="error-message">{errorMsg}</div>}
       </div>
 
-      <div>
-        <input id="session-name-input" placeholder="Session Name" />
-        <button id="save-session" onClick={saveSession}>Save Current Session</button>
-        <button id="view-sessions" onClick={loadSessions}>View Saved Sessions</button>
-        <div id="sessionsList">
-          {sessions.map((sessionName) => (
-            <button
-              key={sessionName}
-              onClick={() => restoreSession(sessionName)}
-              aria-label={`Restore session: ${sessionName}`}
-            >
-              {sessionName}
-            </button>
-          ))}
+      <div className="sessions-container">
+        <div className="sessions-controls">
+          <button 
+            id="save-session" 
+            onClick={saveSession}
+            disabled={!connected}
+          >
+            Save Current Session
+          </button>
+          <button 
+            id="view-sessions" 
+            onClick={loadSessions}
+            disabled={!connected}
+          >
+            View Saved Sessions
+          </button>
         </div>
+        {renderSessions()}
       </div>
 
       <div className="tab-status">
@@ -386,13 +379,13 @@ const Popup = () => {
 const renderPopup = () => {
   try {
     ReactDOM.render(
-      <Provider store={store}>
+      <Provider store={stateManager.store}>
         <Popup />
       </Provider>,
       document.getElementById('root')
     );
   } catch (error) {
-    console.error('Error rendering popup:', error);
+    logger.error('Error rendering popup:', error); // Replace console.error
     // Render error fallback
     ReactDOM.render(
       <div className="error-container">

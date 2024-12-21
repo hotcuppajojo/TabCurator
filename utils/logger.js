@@ -570,19 +570,19 @@ class Logger {
   }
 
   info(message, meta) {
-    console.info(message, meta);
+    console.info(`[INFO] ${message}`, meta);
   }
 
   error(message, meta) {
-    console.error(message, meta);
+    console.error(`[ERROR] ${message}`, meta);
   }
 
   warn(message, meta) {
-    console.warn(message, meta);
+    console.warn(`[WARN] ${message}`, meta);
   }
 
   debug(message, meta) {
-    console.debug(message, meta);
+    console.debug(`[DEBUG] ${message}`, meta);
   }
 
   logPerformance(type, duration, meta) {

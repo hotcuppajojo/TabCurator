@@ -134,7 +134,7 @@ describe('Tab Limit Component Tests', () => {
     fireEvent.click(closeButton);
 
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
-      type: 'TAB_ACTION',
+      type: MESSAGE_TYPES.TAB_ACTION,
       action: TAB_OPERATIONS.TAG_AND_CLOSE,
       payload: {
         tabId: 0,
