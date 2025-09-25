@@ -1,706 +1,60 @@
-// utils/tabManager.js
 /**
- * @fileoverview Tab Manager Module - Handles tab operations with background.js coordination
+ * @fileoverview Tab Manager Module - Handles tab operations with background.js coordination.
+ * Uses the core module for all constants, actions, and state.
  */
 
 import browser from 'webextension-polyfill';
 import { logger } from './logger.js';
 import {
-  TAB_STATES,
+  ACTION,
+  addBookmark,
+  getOrCreateBookmarkFolder,
+  removeBookmark,
+  searchBookmarks,
+  initializeBookmarkFolder,
+  TAB_OPERATIONS,
+  STATE,
   CONFIG,
-  VALIDATION_TYPES,
   BOOKMARK_CONFIG,
   MESSAGE_TYPES,
-  TAB_OPERATIONS  // Import TAB_OPERATIONS from constants
-} from './constants.js';
+  MESSAGES,
+  MESSAGE_TEMPLATES,
+  formatMessage,
+  connectToBackground,
+  sendMessageToBackground,
+  listenForMessages,
+  broadcastMessage,
+  validateMessage,
+  CONNECTION_STATES,
+  ERROR_CATEGORIES,
+  ERROR_TYPES,
+  LOG_CATEGORIES,
+  LOG_LEVELS,
+  ValidationError,
+  APIError,
+  TabLimitExceededError,
+  VALIDATION_SCHEMAS,
+  TAG_VALIDATION,
+  coreSelectors,
+  selectors,
+  validateArgs, 
+  validateTag, 
+  validateTab, 
+  validateTabLimit,
+  PERMISSIONS,
+  recordTelemetry,
+  recordPerformance,
+  setTelemetryEnabled,
+  isTelemetryEnabled,
+  TELEMETRY_EVENTS
+} from './core/index.js';
 
-let stateManager; // Will be initialized later
+const TAB_STATES = STATE.TAB;
 
-export const INACTIVITY_THRESHOLDS = {
-  PROMPT: 600000, // 10 minutes
-  SUSPEND: 1800000 // 30 minutes
-};
-
-const validateTabId = (tabId) => {
-  if (!tabId || typeof tabId !== 'number') {
-    const error = new Error('Invalid tab ID');
-    logger.error('Validation failed', {
-      type: 'TAB_VALIDATION',
-      value: tabId,
-      error: error.message
-    });
-    throw error;
-  }
-  return true;
-};
-
-// Retry mechanism for operations
-const withRetry = async (operation, options = {}) => {
-  const {
-    maxAttempts = CONFIG.RETRY.MAX_ATTEMPTS,
-    backoff = CONFIG.RETRY.BACKOFF_BASE,
-    operation: opType
-  } = options;
-
-  let lastError;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const result = await operation();
-      if (attempt > 1) {
-        logger.info('Operation succeeded after retry', {
-          type: opType,
-          attempts: attempt
-        });
-      }
-      return result;
-    } catch (error) {
-      lastError = error;
-      if (attempt < maxAttempts) {
-        const delay = backoff * Math.pow(2, attempt - 1) * (0.75 + Math.random() * 0.5);
-        logger.warn('Operation failed, retrying', {
-          type: opType,
-          attempt,
-          delay,
-          error: error.message
-        });
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-  throw lastError;
-};
+let stateManager; // Will be initialized by TabManager
 
 /**
- * Queries tabs based on the provided query info.
- * @param {object} queryInfo - The query information.
- * @returns {Promise<Array>} - A promise that resolves to an array of tabs.
- */
-export async function queryTabs(queryInfo) {
-  const startTime = performance.now();
-  try {
-    const tabs = await browser.tabs.query(queryInfo);
-    logger.logPerformance('tabQuery', performance.now() - startTime, {
-      count: tabs.length,
-      filters: Object.keys(queryInfo)
-    });
-    return tabs;
-  } catch (error) {
-    logger.error('Tab query failed', {
-      error: error.message,
-      queryInfo,
-      type: 'TAB_QUERY_ERROR'
-    });
-    throw error;
-  }
-}
-
-/**
- * Wrapper for getting a specific tab.
- * @param {number} tabId - ID of the tab to retrieve.
- * @returns {Promise<Object>} Resolves with the retrieved tab.
- */
-export async function getTab(tabId) {
-  validateTabId(tabId);
-  return withRetry(async () => {
-    const startTime = performance.now();
-    try {
-      const tab = await browser.tabs.get(tabId);
-      logger.logPerformance('tabGet', performance.now() - startTime, { tabId });
-      // Update tab activity using updateTab to reflect last accessed
-      stateManager.dispatch(stateManager.actions.tabManagement.updateTab({ id: tabId, lastAccessed: Date.now() }));
-      return tab;
-    } catch (error) {
-      logger.error('Tab get failed', {
-        error: error.message,
-        tabId,
-        type: 'TAB_GET_ERROR'
-      });
-      throw error;
-    }
-  }, { operation: 'GET_TAB' });
-}
-
-/**
- * Wrapper for creating a new tab.
- * @param {Object} createProperties - Properties for the new tab.
- * @returns {Promise<Object>} Resolves with the created tab.
- */
-export async function createTab(createProperties) {
-  try {
-    if (!browser.tabs || !browser.tabs.create) {
-      throw new Error('Browser API unavailable');
-    }
-    return await browser.tabs.create(createProperties);
-  } catch (err) {
-    console.error("Error creating tab:", err);
-    throw err;
-  }
-}
-
-/**
- * Wrapper for updating a tab.
- * @param {number} tabId - ID of the tab to update.
- * @param {Object} updateProperties - Properties to update on the tab.
- * @returns {Promise<Object>} Resolves with the updated tab.
- */
-export async function updateTab(tabId, updateProperties) {
-  try {
-    const updatedTab = await browser.tabs.update(tabId, updateProperties);
-    // Use stateManager singleton for state updates
-    stateManager.dispatch(stateManager.actions.tabManagement.updateTab({ 
-      id: tabId,
-      ...updateProperties,
-      lastAccessed: Date.now()
-    }));
-    return updatedTab;
-  } catch (err) {
-    logger.error(`Error updating tab ${tabId}:`, err);
-    throw err;
-  }
-}
-
-/**
- * Wrapper for removing a tab.
- * @param {number} tabId - ID of the tab to remove.
- * @returns {Promise<void>} Resolves when the tab is removed.
- */
-export async function removeTab(tabId) {
-  try {
-    await browser.tabs.remove(tabId);
-    // Archive the tab using the archivedTabs slice
-    stateManager.dispatch(stateManager.actions.archivedTabs.archiveTab({ id: tabId, reason: 'Removed' }));
-  } catch (err) {
-    console.error(`Error removing tab ${tabId}:`, err);
-    throw err;
-  }
-}
-
-/**
- * Wrapper for discarding a tab with background.js validation
- * @param {number} tabId - The ID of the tab to discard
- * @param {Object} [criteria] - Optional criteria
- * @returns {Promise<void>}
- */
-export async function discardTab(tabId) {
-  const startTime = performance.now();
-  try {
-    // First validate the tab exists and can be discarded
-    const tab = await browser.tabs.get(tabId);
-    if (!tab) {
-      throw new Error(`Tab ${tabId} not found`);
-    }
-
-    // Check if tab is discardable
-    if (tab.active || tab.pinned || tab.audible || tab.discarded) {
-      logger.info('Tab cannot be discarded:', {
-        tabId,
-        active: tab.active,
-        pinned: tab.pinned,
-        audible: tab.audible,
-        discarded: tab.discarded
-      });
-      return { success: false, reason: 'Tab cannot be discarded' };
-    }
-
-    // Try to discard the tab
-    await browser.tabs.discard(tabId);
-    
-    const duration = performance.now() - startTime;
-    logger.logPerformance('tabDiscard', duration, { tabId });
-    
-    return { success: true, tabId };
-  } catch (error) {
-    logger.error('Failed to discard tab', {
-      tabId,
-      error: error.message,
-      type: 'TAB_DISCARD'
-    });
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * Discards all inactive tabs.
- * @returns {Promise<void>}
- */
-export async function discardInactiveTabs() {
-  if (!browser?.tabs) {
-    console.error('Tabs API not available');
-    return;
-  }
-
-  try {
-    const inactiveTabs = await browser.tabs.query({ active: false });
-    for (const tab of inactiveTabs) {
-      await discardTab(tab.id, {
-        type: MESSAGE_TYPES.TAB_ACTION,
-        action: 'discard'
-      });
-    }
-  } catch (error) {
-    console.error("Error discarding inactive tabs:", error);
-  }
-}
-
-/**
- * Updates tab metadata through background.js validation
- * @param {number} tabId - Tab ID to update
- * @param {Object} metadata - Metadata to update
- */
-export async function updateTabMetadata(tabId, metadata) {
-  await browser.runtime.sendMessage({
-    type: MESSAGE_TYPES.TAB_ACTION,
-    action: 'updateMetadata',
-    payload: { tabId, metadata }
-  });
-}
-
-/**
- * Checks for inactive tabs and handles them based on inactivity thresholds.
- * @returns {Promise<void>}
- */
-export async function checkInactiveTabs() {
-  const now = Date.now();
-  const tabs = await browser.tabs.query({});
-  
-  const state = stateManager.getState();
-  for (const tab of tabs) {
-    const lastActivity = state.tabManagement.activity[tab.id]?.lastAccessed || now;
-    const inactiveTime = now - lastActivity;
-
-    if (inactiveTime >= CONFIG.INACTIVITY_THRESHOLDS.SUSPEND) {
-      await discardTab(tab.id);
-    } else if (inactiveTime >= CONFIG.INACTIVITY_THRESHOLDS.PROMPT) {
-      stateManager.dispatch({ 
-        type: 'SET_TAGGING_PROMPT_ACTIVE', 
-        payload: { tabId: tab.id, value: true } 
-      });
-    }
-  }
-}
-
-export async function* processTabBatches(tabs, batchSize = 10) {
-  for (let i = 0; i < tabs.length; i += batchSize) {
-    yield tabs.slice(i, i + batchSize);
-  }
-}
-
-/**
- * Handles tab creation with tab limit enforcement.
- * For simplicity, we just return false if limit exceeded and set oldest tab.
- * @param {Object} tab - The tab object.
- * @returns {Promise<boolean>}
- */
-export async function handleTabCreation(tab) {
-  const maxTabs = stateManager.selectors.selectMaxTabs(stateManager.getState());
-  const allTabs = await browser.tabs.query({});
-  
-  if (allTabs.length > maxTabs) {
-    const oldestTab = stateManager.selectors.selectOldestTab(stateManager.getState());
-    if (oldestTab) {
-      stateManager.dispatch(stateManager.actions.tabManagement.updateOldestTab(oldestTab));
-    }
-    return false;
-  }
-  return true;
-}
-
-export const validateTab = (tab) => {
-  if (!tab?.id || typeof tab.id !== 'number') {
-    throw new TypeError('Invalid tab ID');
-  }
-
-  VALIDATION_TYPES.TAB.required.forEach(field => {
-    if (!(field in tab)) {
-      throw new TypeError(`Missing required field: ${field}`);
-    }
-  });
-
-  return true;
-};
-
-export async function* processTabBatch(tabs, size = 10) {
-  if (!Array.isArray(tabs)) {
-    throw new TypeError('tabs must be an array');
-  }
-  for (let i = 0; i < tabs.length; i += size) {
-    yield tabs.slice(i, i + size);
-  }
-}
-
-export const TAG_TYPES = Object.freeze({
-  AUTOMATED: 'automated',
-  MANUAL: 'manual'
-});
-
-export const RULE_TYPES = Object.freeze({
-  URL_PATTERN: 'urlPattern',
-  TITLE_PATTERN: 'titlePattern'
-});
-
-export const TAG_OPERATIONS = Object.freeze({
-  ADD: 'add',
-  REMOVE: 'remove',
-  UPDATE: 'update'
-});
-
-export const VALIDATION = Object.freeze({
-  TAG: {
-    MAX_LENGTH: 50,
-    PATTERN: /^[a-zA-Z0-9-_]+$/
-  },
-  RULE: {
-    MAX_CONDITIONS: 10
-  }
-});
-
-export function validateTag(tag) {
-  if (!tag || typeof tag !== 'string') {
-    throw new TypeError('Tag must be a non-empty string');
-  }
-  if (!VALIDATION.TAG.PATTERN.test(tag)) {
-    throw new Error('Tag contains invalid characters');
-  }
-  if (tag.length > VALIDATION.TAG.MAX_LENGTH) {
-    throw new Error(`Tag exceeds maximum length of ${VALIDATION.TAG.MAX_LENGTH}`);
-  }
-  return true;
-}
-
-export function validateRule(rule) {
-  const requiredFields = ['id', 'condition', 'action'];
-  if (!requiredFields.every(field => field in rule)) {
-    throw new Error('Invalid rule format');
-  }
-  return true;
-}
-
-export async function tagTab(tabId, tag) {
-  validateTabId(tabId);
-  validateTag(tag);
-  
-  const startTime = performance.now();
-  const originalTab = await getTab(tabId);
-  const updates = [];
-  
-  try {
-    const stateUpdate = {
-      tags: [...(originalTab.tags || []), tag],
-      lastTagged: Date.now()
-    };
-    
-    const updatedTab = await updateTab(tabId, { 
-      title: `[${tag}] ${originalTab.title}` 
-    });
-    updates.push(['title', updatedTab]);
-
-    await stateManager.dispatch(stateManager.actions.tabManagement.updateMetadata({ tabId, metadata: stateUpdate }));
-    updates.push(['state', stateUpdate]);
-    
-    logger.logPerformance('tabTag', performance.now() - startTime, {
-      tabId,
-      tag,
-      success: true
-    });
-    
-    return updatedTab;
-  } catch (error) {
-    logger.error('Tab tagging failed', {
-      error: error.message,
-      tabId,
-      tag,
-      type: 'TAB_TAG_ERROR'
-    });
-    
-    // Rollback logic
-    for (const [type, data] of updates.reverse()) {
-      try {
-        if (type === 'title') {
-          await updateTab(tabId, { title: originalTab.title });
-        } else if (type === 'state') {
-          await stateManager.dispatch(stateManager.actions.tabManagement.updateMetadata({ 
-            tabId, 
-            metadata: {
-              tags: originalTab.tags || [],
-              lastTagged: originalTab.lastTagged
-            }
-          }));
-        }
-      } catch (rollbackError) {
-        logger.error('Rollback failed', {
-          error: rollbackError.message,
-          type: 'ROLLBACK_ERROR',
-          operation: type
-        });
-      }
-    }
-    throw error;
-  }
-}
-
-export async function processTabs(tabs, processor, { 
-  batchSize = CONFIG.BATCH.SIZE,
-  onProgress,
-  isolateErrors = true,
-  retryFailures = true
-} = {}) {
-  const results = [];
-  const errors = [];
-  const retries = new Map();
-  let processed = 0;
-
-  const processWithRetry = async (tab) => {
-    const startTime = performance.now();
-    const retryCount = retries.get(tab.id) || 0;
-
-    try {
-      const result = await processor(tab);
-      logger.logPerformance('tabProcessing', performance.now() - startTime, {
-        tabId: tab.id,
-        operation: 'process',
-        retries: retryCount
-      });
-      return result;
-    } catch (error) {
-      if (retryFailures && retryCount < CONFIG.RETRY.MAX_ATTEMPTS) {
-        retries.set(tab.id, retryCount + 1);
-        const delay = CONFIG.RETRY.DELAYS[retryCount];
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return processWithRetry(tab);
-      }
-      throw error;
-    }
-  };
-
-  for (let i = 0; i < tabs.length; i += batchSize) {
-    const batch = tabs.slice(i, Math.min(i + batchSize, tabs.length));
-    const batchResults = await Promise.allSettled(
-      batch.map(async tab => {
-        try {
-          return await processWithRetry(tab);
-        } catch (error) {
-          logger.error('Tab processing failed', {
-            tabId: tab.id,
-            error: error.message,
-            retries: retries.get(tab.id) || 0,
-            type: 'TAB_PROCESSING_ERROR'
-          });
-          if (!isolateErrors) throw error;
-          errors.push({ tab, error });
-          return null;
-        }
-      })
-    );
-
-    results.push(...batchResults
-      .filter(r => r.status === 'fulfilled')
-      .map(r => r.value)
-      .filter(Boolean));
-
-    processed += batch.length;
-    if (onProgress) {
-      onProgress(processed / tabs.length);
-    }
-
-    logger.info('Batch processed', {
-      batchSize: batch.length,
-      successCount: batchResults.filter(r => r.status === 'fulfilled').length,
-      errorCount: batchResults.filter(r => r.status === 'rejected').length,
-      totalProcessed: processed,
-      totalTabs: tabs.length
-    });
-  }
-
-  return { results, errors };
-}
-
-export const convertToDeclarativeRules = (rules) => {
-  if (!Array.isArray(rules)) {
-    throw new TypeError('Rules must be an array');
-  }
-  
-  return rules.map((rule, id) => ({
-    id: id + 1,
-    priority: 1,
-    condition: {
-      urlFilter: rule.condition,
-      resourceTypes: ['main_frame'],
-      domains: rule.domains || []
-    },
-    action: {
-      type: 'modifyHeaders',
-      responseHeaders: [{ 
-        header: 'X-TabCurator-Tag', 
-        operation: 'set', 
-        value: rule.tag 
-      }]
-    }
-  }));
-};
-
-export const activateRules = async (rules) => {
-  try {
-    const declarativeRules = convertToDeclarativeRules(rules);
-    await browser.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: rules.map((_, i) => i + 1),
-      addRules: declarativeRules
-    });
-  } catch (error) {
-    console.error('Failed to activate rules:', error);
-    throw error;
-  }
-};
-
-export async function applyRulesToTab(tab, browserInstance, stateManager) {
-  if (!browserInstance?.declarativeNetRequest) {
-    throw new Error("Declarative Net Request API not available");
-  }
-
-  try {
-    const { rules = [] } = await browserInstance.storage.sync.get("rules");
-    
-    for (const rule of rules) {
-      try {
-        if (!rule.condition || !rule.action) continue;
-
-        const matches = tab.url.includes(rule.condition) || 
-                       tab.title.includes(rule.condition);
-        
-        if (matches) {
-          const [actionType, tag] = rule.action.split(": ");
-          
-          if (actionType === 'Tag') {
-            const tabData = {
-              title: tab.title,
-              url: tab.url,
-              timestamp: Date.now()
-            };
-
-            logger.info('Archiving tab due to rule match', { tabId: tab.id, tag });
-
-            await stateManager.dispatch({ 
-              type: MESSAGE_TYPES.RULE_UPDATE,
-              payload: { 
-                tag, 
-                tabData,
-                ruleId: rule.id
-              }
-            });
-            
-            break;
-          }
-        }
-      } catch (ruleError) {
-        console.error(`Error processing rule for tab ${tab.id}:`, ruleError);
-      }
-    }
-  } catch (error) {
-    console.error(`Error applying rules to tab (ID: ${tab.id}):`, error);
-    throw error;
-  }
-}
-
-export async function* processRulesBatch(rules, size = 10) {
-  for (let i = 0; i < rules.length; i += size) {
-    yield rules.slice(i, i + size);
-  }
-}
-
-/**
- * Processes a batch of tab operations with background.js coordination
- * @param {Array<Object>} operations - Array of tab operations
- * @returns {Promise<Array>} Results of operations
- */
-export async function processBatchOperations(operations) {
-  return browser.runtime.sendMessage({
-    type: MESSAGE_TYPES.TAB_ACTION,
-    action: 'batchProcess',
-    payload: { operations }
-  });
-}
-
-// Testing utilities
-export const __testing__ = {
-  validateTabId: (tabId) => {
-    try {
-      validateTabId(tabId);
-      return { valid: true };
-    } catch (error) {
-      return { valid: false, error: error.message };
-    }
-  },
-  
-  processBatch: async (tabs, processor, options) => {
-    return processTabs(tabs, processor, options);
-  },
-  
-  validateTag: (tag) => {
-    try {
-      validateTag(tag);
-      return { valid: true };
-    } catch (error) {
-      return { valid: false, error: error.message };
-    }
-  },
-  
-  testTabLifecycle: async (createProps) => {
-    const tab = await createTab(createProps);
-    await updateTab(tab.id, { title: 'Test Update' });
-    await discardTab(tab.id);
-    await removeTab(tab.id);
-    return true;
-  }
-};
-
-/**
- * Tag the tab with the provided tag, bookmark it under the TabCurator folder, and then close it.
- * @param {number} tabId - The ID of the tab to tag and bookmark.
- * @param {string} tag - The tag to apply to the tab.
- */
-export async function tagTabAndBookmark(tabId, tag) {
-  // Get the tab
-  const tab = await getTab(tabId);
-  
-  // Tag the tab by updating its title
-  const originalTitle = tab.title;
-  const taggedTitle = `[${tag}] ${originalTitle}`;
-  await updateTab(tabId, { title: taggedTitle });
-
-  // Find or create the "TabCurator" bookmark folder
-  let folderId;
-  const folders = await browser.bookmarks.search({ title: BOOKMARK_CONFIG.FOLDER_NAME });
-  if (folders.length === 0) {
-    const folder = await browser.bookmarks.create({ title: BOOKMARK_CONFIG.FOLDER_NAME });
-    folderId = folder.id;
-  } else {
-    folderId = folders[0].id;
-  }
-
-  // Bookmark the tab under the TabCurator folder
-  await browser.bookmarks.create({
-    parentId: folderId,
-    title: taggedTitle,
-    url: tab.url
-  });
-
-  // Close the tab
-  await removeTab(tabId);
-
-  logger.info('Tab tagged, bookmarked, and closed', { tabId, tag });
-
-  stateManager.dispatch(
-    stateManager.actions.tabManagement.updateMetadata({
-      tabId,
-      metadata: {
-        tags: [tag],
-        lastTagged: Date.now()
-      }
-    })
-  );
-}
-
-/**
- * Refactored TabManager as a class
+ * TabManager class encapsulates all tab operations and state logic.
  */
 export class TabManager {
   constructor() {
@@ -713,223 +67,336 @@ export class TabManager {
     if (!stateManagerInstance || !stateManagerInstance.store) {
       throw new Error('Valid StateManager instance required');
     }
-    
     this.stateManager = stateManagerInstance;
-    stateManager = stateManagerInstance; // Set the module-level stateManager
-    
+    stateManager = stateManagerInstance; // For legacy compatibility
     this.initialized = true;
     logger.info('Tab manager initialized', { time: Date.now() });
+    await initializeBookmarkFolder(); // Ensure bookmark folder is ready at startup
   }
 
-  async handleTabUpdate(tabId, changeInfo, tab) {
+  async queryTabs(queryInfo) {
+    const tabs = await browser.tabs.query(queryInfo);
+    logger.info('Queried tabs', { count: tabs.length, queryInfo });
+    return tabs;
+  }
+
+  async getTab(tabId) {
+    if (typeof tabId !== 'number') {
+      logger.error('Invalid tab ID', {
+        tabId,
+        category: LOG_CATEGORIES.TABS,
+        severity: ERROR_CATEGORIES.SEVERITY.HIGH,
+        type: ERROR_TYPES.INVALID_MESSAGE
+      });
+      throw new ValidationError('Invalid tab ID');
+    }
     try {
-      const updatedTab = await browser.tabs.get(tabId);
-      // ...handle the updated tab...
-    } catch (error) {
-      logger.error('handleTabUpdate failed', { error: error.message, tabId });
+      return await browser.tabs.get(tabId);
+    } catch (err) {
+      logger.error('Failed to get tab', {
+        tabId,
+        error: err.message,
+        category: LOG_CATEGORIES.TABS,
+        severity: ERROR_CATEGORIES.SEVERITY.HIGH,
+        type: ERROR_TYPES.API_UNAVAILABLE
+      });
+      throw new APIError(`Failed to get tab: ${err.message}`);
     }
   }
 
-  async handleTabRemove(tabId) {
+  async createTab(createProperties) {
+    // Validate arguments using VALIDATION_SCHEMAS
+    validateArgs('create', [createProperties], VALIDATION_SCHEMAS.create);
+    const start = performance.now();
     try {
-      const removedTab = await browser.tabs.get(tabId);
-      // ...handle the removed tab...
-    } catch (error) {
-      logger.error('Failed to handle tab removal', { error: error.message, tabId });
+      const tab = await browser.tabs.create(createProperties);
+      logger.info(MESSAGES.TAB.CREATED, { tabId: tab.id, createProperties });
+      recordTelemetry(TELEMETRY_EVENTS.TAB_CREATED, { tabId: tab.id, ...createProperties });
+      recordPerformance('createTab', performance.now() - start, { tabId: tab.id });
+      return tab;
+    } catch (err) {
+      logger.error(MESSAGES.TAB.CREATION_FAILED, { error: err.message, ...createProperties });
+      recordTelemetry(TELEMETRY_EVENTS.ERROR, { error: err.message, action: 'createTab' });
+      throw new APIError(`${MESSAGES.TAB.CREATION_FAILED}: ${err.message}`);
     }
   }
 
-  async cleanupInactiveTabs() {
-    // Utilize checkInactiveTabs to clean up
-    await checkInactiveTabs();
+  // Make state updates more explicit - tabManager should update state via stateManager
+  async updateTab(tabId, updateProperties) {
+    // Validate arguments using VALIDATION_SCHEMAS
+    validateArgs('update', [tabId, updateProperties], VALIDATION_SCHEMAS.update);
+    const start = performance.now();
+    
+    try {
+      // Call browser API first
+      const updatedTab = await browser.tabs.update(tabId, updateProperties);
+      
+      // Then update state if successful
+      if (this.stateManager) {
+        this.stateManager.dispatch(
+          this.stateManager.actions.tabManagement.updateTab({
+            id: tabId,
+            ...updateProperties,
+            lastAccessed: Date.now()
+          })
+        );
+      }
+      
+      recordPerformance('updateTab', performance.now() - start, { tabId });
+      return updatedTab;
+    } catch (error) {
+      logger.error(ACTION.TAB.UPDATE_FAILED, { tabId, error: error.message });
+      throw error;
+    }
+  }
+
+  // Add a helper to ensure consistent state updates
+  _updateTabState(tabId, stateChanges) {
+    if (this.stateManager) {
+      this.stateManager.dispatch(
+        this.stateManager.actions.tabManagement.updateTab({
+          id: tabId,
+          ...stateChanges
+        })
+      );
+    }
+  }
+
+  async removeTab(tabId) {
+    // Validate arguments using VALIDATION_SCHEMAS
+    validateArgs('remove', [tabId], VALIDATION_SCHEMAS.remove);
+    const start = performance.now();
+    await browser.tabs.remove(tabId);
+    logger.info(formatMessage(MESSAGE_TEMPLATES.TAB_COUNT, { count: tabId }), { tabId });
+    recordTelemetry(TELEMETRY_EVENTS.TAB_REMOVED, { tabId });
+    recordPerformance('removeTab', performance.now() - start, { tabId });
+    if (this.stateManager) {
+      this.stateManager.dispatch(
+        this.stateManager.actions.archivedTabs.archiveTab({ id: tabId, reason: 'Removed' })
+      );
+    }
+  }
+
+  async discardTab(tabId) {
+    // Validate argument
+    validateArgs('discard', [tabId]);
+    const tab = await this.getTab(tabId);
+    validateTab(tab);
+    if (!tab || tab.active || tab.pinned || tab.audible || tab.discarded) {
+      logger.info('Tab cannot be discarded', { tabId });
+      return { success: false, reason: 'Tab cannot be discarded' };
+    }
+    await browser.tabs.discard(tabId);
+    // Use STATE.TAB.DISCARDED for status update
+    if (this.stateManager) {
+      this.stateManager.dispatch(
+        this.stateManager.actions.tabManagement.updateTab({
+          id: tabId,
+          status: STATE.TAB.DISCARDED,
+          lastAccessed: Date.now()
+        })
+      );
+    }
+    logger.info(ACTION.TAB.DISCARD, { tabId });
+    return { success: true, tabId };
+  }
+
+  async discardInactiveTabs() {
+    const inactiveTabs = await browser.tabs.query({ active: false });
+    for (const tab of inactiveTabs) {
+      await this.discardTab(tab.id);
+    }
+    logger.info(ACTION.TAB.SUSPEND_INACTIVE, { count: inactiveTabs.length });
+  }
+
+  async tagTab(tabId, tag) {
+    try {
+      validateTag(tag);
+      const tab = await this.getTab(tabId);
+      validateTab(tab);
+      const taggedTitle = `[${tag}] ${tab.title}`;
+      await this.updateTab(tabId, { title: taggedTitle });
+      if (this.stateManager) {
+        this.stateManager.dispatch(
+          this.stateManager.actions.tabManagement.updateMetadata({
+            tabId,
+            metadata: { tags: [tag], lastTagged: Date.now() }
+          })
+        );
+      }
+      logger.info(ACTION.TAB.TAG_AND_CLOSE, { tabId, tag });
+      recordTelemetry(TELEMETRY_EVENTS.TAB_TAGGED, { tabId, tag });
+      return taggedTitle;
+    } catch (err) {
+      logger.error(VALIDATION_ERRORS.INVALID_MESSAGE, {
+        tabId,
+        tag,
+        error: err.message,
+        category: LOG_CATEGORIES.TABS,
+        severity: ERROR_CATEGORIES.SEVERITY.HIGH,
+        type: ERROR_TYPES.INVALID_MESSAGE
+      });
+      throw new ValidationError(`${VALIDATION_ERRORS.INVALID_MESSAGE}: ${err.message}`);
+    }
+  }
+
+  async tagTabAndBookmark(tabId, tag) {
+    // Permission check before bookmark operation
+    if (browser.permissions && PERMISSIONS.BOOKMARKS) {
+      const has = await browser.permissions.contains({ permissions: [PERMISSIONS.BOOKMARKS] });
+      if (!has) {
+        await browser.permissions.request({ permissions: [PERMISSIONS.BOOKMARKS] });
+      }
+    }
+    validateTag(tag);
+    const tab = await this.getTab(tabId);
+    validateTab(tab);
+    const taggedTitle = `[${tag}] ${tab.title}`;
+    await this.updateTab(tabId, { title: taggedTitle });
+
+    const folderId = await getOrCreateBookmarkFolder();
+    if (folderId) {
+      const existing = await searchBookmarks({ url: tab.url });
+      if (!existing.some(bm => bm.parentId === folderId)) {
+        await addBookmark({
+          parentId: folderId,
+          title: taggedTitle,
+          url: tab.url
+        });
+      }
+    }
+
+    await this.removeTab(tabId);
+
+    logger.info(ACTION.TAB.TAG_AND_CLOSE, { tabId, tag });
+    recordTelemetry(TELEMETRY_EVENTS.TAB_TAGGED, { tabId, tag, bookmarked: true });
+    if (this.stateManager) {
+      this.stateManager.dispatch(
+        this.stateManager.actions.tabManagement.updateMetadata({
+          tabId,
+          metadata: { tags: [tag], lastTagged: Date.now() }
+        })
+      );
+    }
+  }
+
+  async getOldestTab() {
+    const tabs = await browser.tabs.query({});
+    if (!tabs.length) return null;
+    // Use lastAccessed if available, else fallback to index
+    const activity = this.stateManager?.selectors?.selectTabActivity(this.stateManager.getState()) || {};
+    const oldestTab = tabs.reduce((oldest, current) => {
+      const lastA = activity[oldest.id]?.lastAccessed || oldest.lastAccessed || 0;
+      const lastC = activity[current.id]?.lastAccessed || current.lastAccessed || 0;
+      return lastA < lastC ? oldest : current;
+    }, tabs[0]);
+    logger.info(ACTION.TAB.GET_OLDEST, { oldestTab: oldestTab?.id });
+    return oldestTab;
+  }
+
+  async suspendInactiveTabs() {
+    const inactiveTabs = await this.getInactiveTabs();
+    const folderId = await getOrCreateBookmarkFolder();
+    const start = performance.now();
+    const results = await Promise.allSettled(
+      inactiveTabs.map(async (tab) => {
+        try {
+          if (folderId) {
+            await addBookmark({
+              parentId: folderId,
+              title: tab.title,
+              url: tab.url
+            });
+          }
+          await browser.tabs.remove(tab.id);
+          // Use STATE.TAB.SUSPENDED for status update
+          if (this.stateManager) {
+            this.stateManager.dispatch(
+              this.stateManager.actions.tabManagement.updateTab({
+                id: tab.id,
+                status: STATE.TAB.SUSPENDED,
+                lastAccessed: Date.now()
+              })
+            );
+          }
+          logger.info(ACTION.TAB.SUSPEND_INACTIVE, { tabId: tab.id });
+          return { success: true, tabId: tab.id };
+        } catch (error) {
+          logger.error('Failed to suspend tab', { tabId: tab.id, error: error.message });
+          return { success: false, error: error.message };
+        }
+      })
+    );
+    const successCount = results.filter(r => r.value?.success).length;
+    recordTelemetry(TELEMETRY_EVENTS.TAB_SUSPENDED, { count: successCount });
+    recordPerformance('suspendInactiveTabs', performance.now() - start, { suspendedCount: successCount });
+    return {
+      success: true,
+      suspendedCount: successCount,
+      results: results.map(r => r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message })
+    };
+  }
+
+  async getInactiveTabs() {
+    const allTabs = await browser.tabs.query({});
+    return allTabs.filter(tab => !tab.active && !tab.pinned);
   }
 
   async enforceTabLimits() {
-    const maxTabs = stateManager.selectors.selectSettings(stateManager.getState()).maxTabs;
+    const maxTabs = this.stateManager?.selectors?.selectSettings(this.stateManager.getState()).maxTabs || CONFIG.TAB_LIMITS.DEFAULT;
     const allTabs = await browser.tabs.query({});
-    
+    const { isValid, message } = validateTabLimit(allTabs.length, maxTabs);
+    if (!isValid) {
+      logger.warn(message, { currentCount: allTabs.length, maxTabs });
+      throw new TabLimitExceededError(maxTabs);
+    }
     if (allTabs.length <= maxTabs) return;
-
-    const activity = stateManager.selectors.selectTabActivity(stateManager.getState());
-    const sortedTabs = this._getSortedTabsByActivity(allTabs, activity);
+    const activity = this.stateManager?.selectors?.selectTabActivity(this.stateManager.getState()) || {};
+    const sortedTabs = allTabs.slice().sort((a, b) => {
+      const lastA = activity[a.id]?.lastAccessed || a.lastAccessed || 0;
+      const lastB = activity[b.id]?.lastAccessed || b.lastAccessed || 0;
+      return lastA - lastB;
+    });
     const oldestTab = sortedTabs[0];
-
     logger.info('Tab limit exceeded, oldest tab identified', {
       currentCount: allTabs.length,
       maxTabs,
       oldestTab: oldestTab.id
     });
+    logger.info(ACTION.TAB.ENFORCE_LIMIT, {
+      currentCount: allTabs.length,
+      maxTabs,
+      oldestTab: oldestTab.id
+    });
 
-    stateManager.dispatch(stateManager.actions.tabManagement.updateOldestTab(oldestTab));
-  }
-
-  async cleanup() {
-    // Cleanup resources if any
-  }
-
-  async handleConnectionError(error) {
-    if (error.message.includes('Extension context invalidated')) {
-      logger.warn('Extension context invalidated, attempting recovery');
-      
-      // Wait brief moment before retry
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      try {
-        // Re-initialize connection
-        await this.initialize();
-        
-        // Refresh extension ID
-        const newId = browser.runtime.id;
-        if (!newId) {
-          throw new Error('Failed to initialize: Extension ID not found');
-        }
-        logger.info('Initializing with extension ID:', { newId });
-
-        // Update any stored references
-        await browser.storage.local.set({ extensionId: newId });
-        
-        logger.info('Connection recovered successfully', { newExtensionId: newId });
-        return true;
-      } catch (recoveryError) {
-        logger.error('Connection recovery failed', { error: recoveryError.message });
-        return false;
+    // Notify background script of enforced limit (if needed)
+    await sendMessageToBackground(MESSAGE_TYPES.TAB_ACTION, {
+      action: ACTION.TAB.ENFORCE_LIMIT,
+      payload: {
+        currentCount: allTabs.length,
+        maxTabs,
+        oldestTab: oldestTab.id
       }
-    }
-    return false;
-  }
+    });
 
-  async withConnectionRetry(operation) {
-    const maxAttempts = 3;
-    let attempts = 0;
-
-    while (attempts < maxAttempts) {
-      try {
-        return await operation();
-      } catch (error) {
-        attempts++;
-        const isRecovered = await this.handleConnectionError(error);
-        
-        if (!isRecovered && attempts === maxAttempts) {
-          throw error;
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
-      }
-    }
-  }
-
-  async getSessions() {
-    try {
-      const state = stateManager.getState();
-      logger.info('Retrieving sessions:', { sessions: state.sessions });
-      return state.sessions || [];
-    } catch (error) {
-      logger.error('Error fetching sessions:', { error: error.message });
-      return [];
+    if (this.stateManager) {
+      this.stateManager.dispatch(this.stateManager.actions.tabManagement.updateOldestTab(oldestTab));
     }
   }
 
   /**
-   * Gets the oldest inactive tab.
-   * @returns {Promise<Object>} The oldest inactive tab.
+   * Removes the bookmark for a given tab URL, if it exists.
+   * @param {string} url - The URL of the tab/bookmark to remove.
    */
-  async getOldestTab() {
-    try {
-      const tabs = await browser.tabs.query({});
-      if (tabs.length === 0) return null;
-      // Assuming tabs are sorted by creation time
-      const oldestTab = tabs.reduce((oldest, current) => {
-        return (current.index < oldest.index) ? current : oldest;
-      }, tabs[0]);
-      return oldestTab;
-    } catch (error) {
-      logger.error('Error retrieving oldest tab:', error);
-      return { error: error.message || 'Failed to retrieve oldest tab' };
+  async removeBookmarkForTab(url) {
+    const bookmarks = await searchBookmarks({ url });
+    for (const bm of bookmarks) {
+      await removeBookmark(bm.id);
     }
-  }
-
-  /**
-   * Suspends inactive tabs by bookmarking them and discarding.
-   * @returns {Promise<Object>} Result of the suspension process.
-   */
-  async suspendInactiveTabs() {
-    try {
-      const inactiveTabs = await this.getInactiveTabs();
-
-      // Get or create TabCurator folder
-      let folder = null;
-      const folders = await browser.bookmarks.search({ title: BOOKMARK_CONFIG.FOLDER_NAME });
-      
-      if (folders.length === 0) {
-        folder = await browser.bookmarks.create({ title: BOOKMARK_CONFIG.FOLDER_NAME });
-      } else {
-        folder = folders[0];
-      }
-
-      // Process each inactive tab
-      const results = await Promise.allSettled(
-        inactiveTabs.map(async (tab) => {
-          try {
-            // Create bookmark first
-            await browser.bookmarks.create({
-              parentId: folder.id,
-              title: tab.title,
-              url: tab.url
-            });
-
-            // Remove the tab after bookmarking
-            await browser.tabs.remove(tab.id);
-
-            logger.info(`Suspended and bookmarked tab: ${tab.id}`);
-            return { success: true, tabId: tab.id };
-          } catch (error) {
-            logger.error('Failed to suspend tab:', { 
-              tabId: tab.id, 
-              error: error.message 
-            });
-            return { success: false, error: error.message };
-          }
-        })
-      );
-
-      const successCount = results.filter(r => r.value?.success).length;
-      
-      return {
-        success: true,
-        suspendedCount: successCount,
-        results: results.map(r => r.status === 'fulfilled' ? r.value : { 
-          success: false, 
-          error: r.reason?.message 
-        })
-      };
-    } catch (error) {
-      logger.error('Error suspending inactive tabs:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  async getInactiveTabs() {
-    // filter out active or pinned tabs
-    const allTabs = await browser.tabs.query({});
-    return allTabs.filter(tab => !tab.active && !tab.pinned);
+    logger.info(ACTION.TAB.BOOKMARK, { action: 'remove', url, count: bookmarks.length });
   }
 }
 
-export async function initialize() {
-  if (!stateManager) {
-    throw new Error('StateManager instance not set. Please call initializeStateManager first.');
-  }
-  if (!stateManager.store) {
-    throw new Error('Valid StateManager instance required');
-  }
-  logger.info('Tab manager initialized', stateManager.store);
-}
-
-// Export a singleton instance of TabManager
+// Export a singleton instance
 const tabManager = new TabManager();
-export { tabManager };
-
-// Only exporting TAB_STATES to avoid confusion since we rely on store/actions for everything else
-export {
-  TAB_STATES
-};
+export { tabManager, TAB_STATES };

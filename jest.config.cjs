@@ -37,8 +37,23 @@ module.exports = {
   moduleNameMapper: {
     '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
     '^webextension-polyfill$': '<rootDir>/tests/jest/mocks/browserMock.js',
+    
+    // Fix the constants.js mapping
+    '^../../utils/constants.js$': '<rootDir>/utils/core/index.js',
+    '^../../../utils/constants.js$': '<rootDir>/utils/core/index.js',
+    
+    // Add direct mappings for core modules to avoid path traversal issues
+    '^../../../../utils/core/(.*)$': '<rootDir>/utils/core/$1',
+    '^../../../utils/core/(.*)$': '<rootDir>/utils/core/$1',
     '^@/(.*)$': '<rootDir>/$1',
-    '^@test/(.*)$': '<rootDir>/tests/$1'
+    '^@test/(.*)$': '<rootDir>/tests/$1',
+
+    // Fix babel runtime mappings with more specific patterns
+    '@babel/runtime-corejs3/core-js-stable/(.*)': '<rootDir>/node_modules/core-js/stable/$1',
+    '@babel/runtime-corejs3/helpers/(.*)': '<rootDir>/node_modules/@babel/runtime/helpers/$1',
+
+    // General fallback mapping for any other @babel/runtime-corejs3 imports
+    '^@babel/runtime-corejs3/(.*)$': '<rootDir>/node_modules/@babel/runtime/$1'
   },
 
   // Add transform ignore patterns for ESM and async/await

@@ -4,48 +4,134 @@ import ReactDOM from 'react-dom';
 import browser from 'webextension-polyfill';
 import './options.css';
 
-import { store, actions } from '../utils/stateManager'; // If Redux integration is still needed
-import { CONFIG, TAB_LIMITS } from '../utils/constants'; // For limits and defaults
-import { Provider } from 'react-redux';
+import { Provider, useDispatch, useSelector } from 'react-redux';
+import stateManager from '../utils/stateManager.js';
+import connectionManager from '../utils/connectionManager.js';
+import { 
+  CONFIG, 
+  MESSAGE_TYPES, 
+  ACTION, 
+  selectors,
+  formatMessage,
+  MESSAGES,
+  recordTelemetry,
+  TELEMETRY_EVENTS
+} from '../utils/core/index.js';
+import { logger } from '../utils/logger.js';
 
-export default function Options() {
-  const [inactiveThreshold, setInactiveThreshold] = useState(60);
-  const [tabLimit, setTabLimit] = useState(100);
+function Options() {
+  const dispatch = useDispatch();
+  const settings = useSelector(state => selectors.selectSettings(state));
+  const [connected, setConnected] = useState(false);
+  const [connectionId, setConnectionId] = useState(null);
+
+  const [inactiveThreshold, setInactiveThreshold] = useState(
+    settings?.inactivityThreshold || CONFIG.INACTIVITY_THRESHOLDS.DEFAULT
+  );
+  const [tabLimit, setTabLimit] = useState(
+    settings?.maxTabs || CONFIG.TAB_LIMITS.DEFAULT
+  );
   const [rules, setRules] = useState([]);
   const [saveSuccessVisible, setSaveSuccessVisible] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Connect to background service worker on component mount
+  useEffect(() => {
+    const initConnection = async () => {
+      try {
+        const connection = await connectionManager.connect();
+        setConnectionId(connection.connectionId);
+        setConnected(true);
+        logger.info('Options page connected to background service worker');
+      } catch (error) {
+        logger.error('Failed to connect to background', { error: error.message });
+        setErrorMsg('Failed to connect to extension background service');
+      }
+    };
+    
+    initConnection();
+    
+    return () => {
+      // Clean up connection when component unmounts
+      if (connectionId) {
+        connectionManager.cleanup();
+      }
+    };
+  }, []);
+
+  // Load settings from state
   useEffect(() => {
     loadOptions();
-  }, []);
+  }, [connected]);
 
   const loadOptions = async () => {
     try {
       setErrorMsg('');
-      const items = await browser.storage.sync.get(['inactiveThreshold', 'tabLimit', 'rules']);
-      setInactiveThreshold(items.inactiveThreshold ?? 60);
-      setTabLimit(items.tabLimit ?? 100);
+      
+      // First try to get fresh settings from state manager
+      if (connected && connectionId) {
+        const response = await connectionManager.sendMessage({
+          type: MESSAGE_TYPES.CONFIG_UPDATE,
+          action: ACTION.STATE.SYNC,
+          payload: {}
+        });
+        
+        if (response && response.settings) {
+          setInactiveThreshold(response.settings.inactivityThreshold || CONFIG.INACTIVITY_THRESHOLDS.DEFAULT);
+          setTabLimit(response.settings.maxTabs || CONFIG.TAB_LIMITS.DEFAULT);
+          return;
+        }
+      }
+      
+      // Fallback to stored settings if necessary
+      const items = await browser.storage.local.get(['settings', 'rules']);
+      setInactiveThreshold(items.settings?.inactivityThreshold || CONFIG.INACTIVITY_THRESHOLDS.DEFAULT);
+      setTabLimit(items.settings?.maxTabs || CONFIG.TAB_LIMITS.DEFAULT);
       setRules(items.rules || []);
     } catch (error) {
-      console.error('Error loading options:', error);
-      setErrorMsg('Error loading options.');
+      logger.error('Error loading options', { error: error.message });
+      setErrorMsg('Error loading options');
     }
   };
 
   const handleSaveOptions = async () => {
     try {
+      // Parse and validate values
       const inactiveVal = parseInt(inactiveThreshold, 10);
-      const tabLimitVal = Math.min(Math.max(parseInt(tabLimit, 10), TAB_LIMITS.MIN), TAB_LIMITS.MAX);
-
-      await browser.storage.sync.set({ inactiveThreshold: inactiveVal, tabLimit: tabLimitVal });
+      const tabLimitVal = Math.min(
+        Math.max(parseInt(tabLimit, 10), CONFIG.TAB_LIMITS.MIN), 
+        CONFIG.TAB_LIMITS.MAX
+      );
       
-      // Optionally dispatch something to the store if needed:
-      // store.dispatch(actions.settings.updateSettings({ inactivityThreshold: inactiveVal, maxTabs: tabLimitVal }));
-
+      const updatedSettings = { 
+        inactivityThreshold: inactiveVal, 
+        maxTabs: tabLimitVal 
+      };
+  
+      // 1. Update Redux store through stateManager
+      dispatch(stateManager.actions.settings.updateSettings(updatedSettings));
+      
+      // 2. Notify background through connectionManager
+      if (connected && connectionId) {
+        await connectionManager.sendMessage({
+          type: MESSAGE_TYPES.CONFIG_UPDATE,
+          payload: updatedSettings
+        });
+      }
+      
+      // 3. Save to browser storage as backup
+      await browser.storage.local.set({ 
+        settings: updatedSettings
+      });
+      
+      // Record telemetry
+      recordTelemetry(TELEMETRY_EVENTS.SETTINGS_UPDATED, updatedSettings);
+      
+      // Show success message
       showSaveSuccess();
     } catch (error) {
-      console.error('Error saving options:', error);
-      setErrorMsg('Error saving options.');
+      logger.error('Error saving options', { error: error.message });
+      setErrorMsg('Error saving options');
     }
   };
 
@@ -88,16 +174,26 @@ export default function Options() {
       }
 
       if (hasErrors) {
-        setErrorMsg('Please fill out all rule fields.');
+        setErrorMsg('Please fill out all rule fields');
         return;
       }
 
-      await browser.storage.sync.set({ rules });
-      await browser.runtime.sendMessage({ action: 'updateRules', rules });
+      // Save rules to storage
+      await browser.storage.local.set({ rules });
+      
+      // Update rules through connectionManager
+      if (connected && connectionId) {
+        await connectionManager.sendMessage({
+          type: MESSAGE_TYPES.RULE_UPDATE,
+          action: ACTION.RULES.UPDATE,
+          payload: { rules }
+        });
+      }
+      
       showSaveSuccess();
     } catch (error) {
-      console.error('Error saving rules:', error);
-      setErrorMsg('Error saving rules.');
+      logger.error('Error saving rules', { error: error.message });
+      setErrorMsg('Error saving rules');
     }
   };
 
@@ -105,6 +201,7 @@ export default function Options() {
     <div className="options-container">
       <h1>TabCurator Options</h1>
       {errorMsg && <div className="error-message">{errorMsg}</div>}
+      {!connected && <div className="connection-warning">Not connected to background service</div>}
 
       <div className="setting-group">
         <label htmlFor="inactiveThreshold">Inactive Threshold (minutes):</label>
@@ -115,6 +212,9 @@ export default function Options() {
           onChange={(e) => setInactiveThreshold(e.target.value)}
           min="1"
         />
+        <span className="setting-hint">
+          Time before tabs are considered inactive
+        </span>
       </div>
 
       <div className="setting-group">
@@ -124,11 +224,11 @@ export default function Options() {
           id="tabLimit"
           value={tabLimit}
           onChange={(e) => setTabLimit(e.target.value)}
-          min={TAB_LIMITS.MIN}
-          max={TAB_LIMITS.MAX}
+          min={CONFIG.TAB_LIMITS.MIN}
+          max={CONFIG.TAB_LIMITS.MAX}
         />
         <span className="setting-hint">
-          Limit: {TAB_LIMITS.MIN} - {TAB_LIMITS.MAX} tabs
+          Limit: {CONFIG.TAB_LIMITS.MIN} - {CONFIG.TAB_LIMITS.MAX} tabs
         </span>
       </div>
 
@@ -168,8 +268,9 @@ export default function Options() {
   );
 }
 
+// Render with proper Provider
 ReactDOM.render(
-  <Provider store={store}>
+  <Provider store={stateManager.store}>
     <Options />
   </Provider>,
   document.getElementById('root')

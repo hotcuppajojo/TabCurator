@@ -1,5 +1,19 @@
-// utils/logger.js
-import { ERROR_CATEGORIES, TELEMETRY_CONFIG, CONFIG, LOG_LEVELS, LOG_CATEGORIES } from './constants.js';
+/**
+ * @fileoverview Logger utility for consistent logging across the extension.
+ * Provides structured logging with severity levels, categories, and telemetry integration.
+ */
+
+import { 
+  LOG_LEVELS, 
+  LOG_CATEGORIES, 
+  ERROR_CATEGORIES 
+} from './core/error.js';
+import { CONFIG } from './core/config.js';
+import { 
+  recordTelemetry, 
+  isTelemetryEnabled, 
+  TELEMETRY_EVENTS 
+} from './core/telemetry.js';
 import browser from 'webextension-polyfill';
 
 // Add default logging preferences
@@ -49,8 +63,10 @@ class Logger {
       maxRetries: 3,
       baseDelay: 1000,
       maxDelay: 10000,
+      pendingRetries: new Map()
     };
 
+    this._lastMetricsCleanup = Date.now();
     this.initialize();
   }
 
@@ -186,15 +202,15 @@ class Logger {
     }
   }
 
-  async _notifyTelemetry(data) {
-    if (!window.telemetry) return;
+  _notifyTelemetry(data) {
+    if (!isTelemetryEnabled()) return;
 
     const retryId = crypto.randomUUID();
     let attempt = 0;
 
     const attemptSubmission = async () => {
       try {
-        await window.telemetry.send({
+        await recordTelemetry(TELEMETRY_EVENTS.LOGGING_METRICS, {
           ...data,
           timestamp: Date.now(),
           retryId
@@ -226,7 +242,7 @@ class Logger {
       }
     };
 
-    await attemptSubmission();
+    attemptSubmission();
   }
 
   log(level, message, context = {}) {
@@ -402,7 +418,7 @@ class Logger {
   _checkThresholds(entry) {
     if (entry.level === 'error') {
       const count = this.errorCounts.get(entry.context.type) || 0;
-      if (count >= TELEMETRY_CONFIG.ERROR_THRESHOLD) {
+      if (count >= CONFIG.TELEMETRY.ERROR_THRESHOLD) {
         this._notifyTelemetry({
           type: 'ERROR_THRESHOLD_EXCEEDED',
           errorType: entry.context.type,
@@ -416,7 +432,7 @@ class Logger {
     const metrics = this.performanceMetrics.get(metric.operation);
     const avgDuration = metrics.totalDuration / metrics.count;
 
-    if (avgDuration > TELEMETRY_CONFIG.PERFORMANCE_THRESHOLD) {
+    if (avgDuration > CONFIG.TELEMETRY.PERFORMANCE_THRESHOLD) {
       this._notifyTelemetry({
         type: 'PERFORMANCE_THRESHOLD_EXCEEDED',
         operation: metric.operation,
@@ -569,6 +585,7 @@ class Logger {
     };
   }
 
+  // Public methods for logging
   info(message, meta) {
     console.info(`[INFO] ${message}`, meta);
   }

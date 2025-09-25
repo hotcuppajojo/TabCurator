@@ -1,91 +1,42 @@
 // tests/jest/mocks/browserMock.js
 
-const browserMock = {
+export default {
   tabs: {
     query: jest.fn().mockResolvedValue([]),
-    create: jest.fn().mockResolvedValue({ id: 1 }),
-    remove: jest.fn().mockResolvedValue(),
-    update: jest.fn().mockResolvedValue({}),
-    get: jest.fn().mockResolvedValue({}),
-    discard: jest.fn().mockResolvedValue({}),
-    duplicate: jest.fn().mockResolvedValue({}),
-    moveInSuccession: jest.fn().mockResolvedValue(),
-    onActivated: {
-      addListener: jest.fn(),
-      removeListener: jest.fn()
-    },
-    onUpdated: {
-      addListener: jest.fn(),
-      removeListener: jest.fn()
-    },
-    onRemoved: {
-      addListener: jest.fn(), // Ensures addListener is mocked
-      removeListener: jest.fn(),
-    }
+    get: jest.fn().mockResolvedValue({ id: 1, url: 'https://example.com', title: 'Example Tab' }),
+    create: jest.fn().mockResolvedValue({ id: 123, url: 'https://example.com' }),
+    update: jest.fn().mockResolvedValue({ id: 1 }),
+    remove: jest.fn().mockResolvedValue(undefined),
+    discard: jest.fn().mockResolvedValue(undefined),
+    onCreated: { addListener: jest.fn(), removeListener: jest.fn() },
+    onRemoved: { addListener: jest.fn(), removeListener: jest.fn() },
+    onUpdated: { addListener: jest.fn(), removeListener: jest.fn() }
+  },
+  bookmarks: {
+    search: jest.fn().mockResolvedValue([]),
+    create: jest.fn().mockResolvedValue({ id: 'folder123', title: 'TabCurator' }),
+    remove: jest.fn().mockResolvedValue(undefined)
+  },
+  permissions: {
+    contains: jest.fn().mockResolvedValue(true),
+    request: jest.fn().mockResolvedValue(true)
   },
   runtime: {
+    getURL: (p) => `chrome-extension://__EXT__/${p}`,
+    openOptionsPage: jest.fn().mockResolvedValue(undefined),
     sendMessage: jest.fn().mockResolvedValue({}),
-    onMessage: {
-      addListener: jest.fn(),
-      removeListener: jest.fn(),
-    },
-    getManifest: jest.fn().mockReturnValue({ version: '1.0.0' }),
-    connect: jest.fn().mockReturnValue({
-      onMessage: {
-        addListener: jest.fn(),
-        removeListener: jest.fn()
-      },
-      onDisconnect: {
-        addListener: jest.fn(),
-        removeListener: jest.fn()
-      },
-      postMessage: jest.fn(),
-      disconnect: jest.fn()  // Add disconnect method
-    }),
-    onConnect: {
-      addListener: jest.fn(), // Added onConnect.addListener mock
-      removeListener: jest.fn(),
-    },
+    onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
+    connect: jest.fn(() => ({ connectionId: 'conn1', postMessage: jest.fn(), onMessage: { addListener: jest.fn() } }))
   },
   storage: {
     local: {
-      get: jest.fn().mockResolvedValue({}),
-      set: jest.fn().mockResolvedValue(),
-      clear: jest.fn().mockResolvedValue(),
+      get: jest.fn().mockResolvedValue({ telemetry_events: [] }),
+      set: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined)
     },
-    sync: {
-      get: jest.fn().mockResolvedValue({}),
-      set: jest.fn().mockResolvedValue(),
-    },
-    estimate: jest.fn().mockResolvedValue({
-      quota: 102400000,    // 100MB
-      usage: 51200000,     // 50MB
-      available: 51200000  // 50MB
-    }),
-    onChanged: {
-      addListener: jest.fn(),
-      removeListener: jest.fn(),
-    }
+    onChanged: { addListener: jest.fn(), removeListener: jest.fn() }
   },
   notifications: {
-    create: jest.fn().mockResolvedValue('notification-id'),
-    clear: jest.fn().mockResolvedValue(true),
-  },
-  declarativeNetRequest: {
-    updateDynamicRules: jest.fn().mockResolvedValue(),
-    getDynamicRules: jest.fn().mockResolvedValue([])
+    create: jest.fn().mockResolvedValue(undefined)
   }
 };
-
-// Add helper methods for testing
-browserMock.__resetMocks = () => {
-  Object.values(browserMock).forEach(api => {
-    Object.values(api).forEach(method => {
-      if (typeof method === 'function' && method.mockReset) {
-        method.mockReset();
-      }
-    });
-  });
-};
-
-export default browserMock;

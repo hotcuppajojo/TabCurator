@@ -79,62 +79,286 @@ import deepEqual from 'fast-deep-equal'; // Changed import source from 'reselect
 
 export const CONNECTION_NAME = 'tabActivity';
 
-export const TAB_STATES = Object.freeze({
-  ACTIVE: 'ACTIVE',
-  SUSPENDED: 'SUSPENDED',
-  ARCHIVED: 'ARCHIVED',
-  PENDING_TAG: 'PENDING_TAG',
-  EXCEEDED_LIMIT: 'EXCEEDED_LIMIT'
-});
-
-export const MESSAGE_TYPES = Object.freeze({
-  CONNECTION_ACK: 'CONNECTION_ACK',
-  ERROR: 'ERROR',
-  GET_SESSIONS: 'GET_SESSIONS',
-  INIT_CHECK: 'INIT_CHECK',
-  RULE_UPDATE: 'RULE_UPDATE', 
-  STATE_UPDATE: 'STATE_UPDATE',
-  STATE_SYNC: 'STATE_SYNC',
-  SERVICE_WORKER_UPDATE: 'SERVICE_WORKER_UPDATE',
-  SESSION_ACTION: 'SESSION_ACTION',
-  TAB_ACTION: 'TAB_ACTION',
-  TAG_ACTION: 'TAG_ACTION',
-  TEST_ACTION: 'TEST_ACTION', 
-  TEST_MESSAGE: 'TEST_MESSAGE', 
-});
-
-export const ERROR_TYPES = Object.freeze({
-  PERMISSION_DENIED: 'PERMISSION_DENIED',
-  API_UNAVAILABLE: 'API_UNAVAILABLE',
-  INVALID_MESSAGE: 'INVALID_MESSAGE',
-  CONNECTION_ERROR: 'CONNECTION_ERROR',
-  TAB_LIMIT_EXCEEDED: 'TAB_LIMIT_EXCEEDED',
-  TAGGING_REQUIRED: 'TAGGING_REQUIRED'
-});
-
-export const ERROR_CATEGORIES = Object.freeze({
-  CRITICAL_STORAGE: 'CRITICAL_STORAGE',
-  TRANSIENT: {
-    CONNECTION: 'connection',
-    TIMEOUT: 'timeout',
-    RATE_LIMIT: 'rateLimit',
-    UNKNOWN: 'unknown',
-    NETWORK: 'connection'
+export const STATE = Object.freeze({
+  TAB: {
+    ACTIVE: 'ACTIVE',
+    INACTIVE: 'INACTIVE',
+    DISCARDED: 'DISCARDED',
+    SUSPENDED: 'SUSPENDED',
+    ARCHIVED: 'ARCHIVED',
+    EXCEEDED_LIMIT: 'EXCEEDED_LIMIT',
+    PENDING_TAG: 'PENDING_TAG',
   },
-  CRITICAL: {
-    AUTHENTICATION: 'auth',
-    PERMISSION: 'permission',
-    API: 'api',
+});
+
+export const ACTION = Object.freeze({
+  RULES: {
+    UPDATE: 'UPDATE_RULES',
+    ACTIVATE: 'ACTIVATE_RULES',
+    DEACTIVATE: 'DEACTIVATE_RULES'
+  },
+  SESSION: {
+    DELETE: 'DELETE_SESSION',
+    RESTORE: 'RESTORE_SESSION',
+    SAVE: 'SAVE_SESSION',
+  },
+  STATE: {
+    INITIALIZE: 'INITIALIZE_STATE',
+    RECOVER: 'RECOVER_STATE',
+    RESET: 'RESET_STATE',
+    SYNC: 'SYNC_STATE'
+  },
+  TAB: {
+    SUSPEND_INACTIVE: 'SUSPEND_INACTIVE',
+    TAG_AND_CLOSE: 'TAG_AND_CLOSE',
+    GET_OLDEST: 'GET_OLDEST',
+    CHECK_LIMIT: 'CHECK_LIMIT',
+    ENFORCE_LIMIT: 'ENFORCE_LIMIT',
+    BOOKMARK: 'BOOKMARK',
+    CAPTURE: 'browser.tabs.create(createProperties)',
+    CURRENT: 'browser.tabs.getCurrent()',
+    CREATE: 'browser.tabs.create(createProperties)',
+    DISCARD: 'browser.tabs.discard(tabId?)',
+    DUPLICATE: 'browser.tabs.duplicate(tabId)',
+    GET: 'browser.tabs.get(tabId)',
+    GROUP: 'browser.tabs.group(options)',
+    HIGHLIGHT: 'browser.tabs.highlight(highlightInfo)',
+    MESSAGE: 'browser.tabs.sendMessage(tabId, message, options?)',
+    MOVE: 'browser.tabs.move(tabIds, moveProperties)',
+    LANGUAGE: 'browser.tabs.detectLanguage(tabId?)',
+    QUERY: 'browser.tabs.query(queryInfo)',
+    RELOAD: 'browser.tabs.reload(tabId?, reloadProperties?)',
+    REMOVE: 'browser.tabs.remove(tabIds)',
+    UNGROUP: 'browser.tabs.ungroup(tabIds)',
+    UPDATE: 'browser.tabs.update(tabId, updateProperties)',
+    LISTEN: {
+      ACTIVATED: 'browser.tabs.onActivated.addListener(callback)',
+      ATTACHED: 'browser.tabs.onAttached.addListener(callback)',
+      CREATED: 'browser.tabs.onCreated.addListener(callback)',
+      DETACHED: 'browser.tabs.onDetached.addListener(callback)',
+      MOVED: 'browser.tabs.onMoved.addListener(callback)',
+      REMOVED: 'browser.tabs.onRemoved.addListener(callback)',
+      REPLACED: 'browser.tabs.onReplaced.addListener(callback)',
+      UPDATED: 'browser.tabs.onUpdated.addListener(callback)',
+      ZOOM: 'browser.tabs.onZoomChange.addListener(callback)',
+    },
+    ZOOM: { 
+      FACTOR: {
+        GET: 'browser.tabs.getZoom(tabId?)',
+        SET: 'browser.tabs.setZoom(tabId?, zoomFactor)',
+      },
+      SETTINGS: {
+        GET: 'browser.tabs.getZoomSettings(tabId?)',
+        SET: 'browser.tabs.setZoomSettings(tabId?, zoomSettings)',
+      },
+    },
+  }, 
+  TAG: {
+    ADD: 'ADD_TAG',
+    REMOVE: 'REMOVE_TAG',
+    UPDATE: 'UPDATE_TAG',
+  },
+});
+
+export const ERROR = Object.freeze({
+  LEVEL: {
+    CRITICAL: 'CRITICAL',
+    DEBUG: 'DEBUG',
+    INFO: 'INFO',
+    WARNING: 'WARNING',
+  },
+  CATEGORIES:{
+    CRITICAL_STORAGE: 'CRITICAL_STORAGE',
+    TRANSIENT: {
+      CONNECTION: 'connection',
+      TIMEOUT: 'timeout',
+      RATE_LIMIT: 'rateLimit',
+      UNKNOWN: 'unknown',
+      NETWORK: 'connection'
+    },
+    CRITICAL: {
+      AUTHENTICATION: 'auth',
+      PERMISSION: 'permission',
+      API: 'api',
+      STATE: 'state',
+      STORAGE: 'storage',
+      VALIDATION: 'validation'
+    },
+  },
+});
+
+export const LOG = Object.freeze({
+  CATEGORIES: {
+    SECURITY: 'security',
+    PERFORMANCE: 'performance',
     STATE: 'state',
-    STORAGE: 'storage',
-    VALIDATION: 'validation'
+    TELEMETRY: 'telemetry',
+    API: 'api',
+    UI: 'ui',
+    RULES: 'rules',
+    TABS: 'tabs'
   },
-  SEVERITY: {
-    LOW: 1,
-    MEDIUM: 2,
-    HIGH: 3,
-    CRITICAL: 4
-  }
+  LEVELS:{
+    NONE: 0,
+    ERROR: 1,
+    WARN: 2,
+    INFO: 3,
+    DEBUG: 4,
+    ALL: 5,
+    PERFORMANCE: 'performance',
+    SECURITY: 'security',
+    STATE: 'state',
+    TELEMETRY: 'telemetry',
+    API: 'api',
+    UI: 'ui',
+    RULES: 'rules',
+    TABS: 'tabs'
+  },
+});
+
+export const MESSAGE = Object.freeze({
+  ACTION: {
+    TAB: {
+      CAPTURE: 'Captured the visible area of the current tab.',
+      CURRENT: 'Retrieved the current active tab.',
+      CREATE: 'Created a new tab.',
+      DISCARD: 'Discarded tabId: ',
+      DUPLICATE: 'Duplicated tabId: ',
+      GET: 'Retrieved tabId: ',
+      GROUP: 'Grouped tabs with tabIds: ',
+      HIGHLIGHT: 'Highlighted tabs with tabIds: ',
+      LANGUAGE: 'Detected the primary language of tabId: ',
+      MESSAGE: 'Sent a message to tabId: ',
+      MOVE: 'Moved tabs with tabIds: ',
+      QUERY: 'Retrieved tabs matching query.',
+      RELOAD: 'Reloaded tabId: ',
+      REMOVE: 'Closed tabs with tabIds: ',
+      UNGROUP: 'Ungrouped tabs with tabIds: ',
+      UPDATE: 'Updated tabId: ',
+      LISTEN: {
+        ACTIVATED: 'Listening for tab activation events.',
+        ATTACHED: 'Listening for tab attachment events.',
+        CREATED: 'Listening for tab creation events.',
+        DETACHED: 'Listening for tab detachment events.',
+        MOVED: 'Listening for tab movement events.',
+        REMOVED: 'Listening for tab removal events.',
+        REPLACED: 'Listening for tab replacement events.',
+        UPDATED: 'Listening for tab update events.',
+        ZOOM: 'Listening for tab zoom change events.',
+      },
+      ZOOM: {
+        FACTOR: {
+          GET: 'Retrieved zoom factor of tabId: ',
+          SET: 'Set zoom factor for tabId: ',
+        },
+        SETTINGS: {
+          GET: 'Retrieved zoom settings of tabId: ',
+          SET: 'Set zoom settings for tabId: ',
+        },
+      },
+    },
+  },
+  CONNECTION: {
+
+  },
+  ERROR: {
+
+    CONNECTION: {
+
+    },
+    TAB: {
+      TAB: {
+        CAPTURE: 'Failed to capture the visible area of the current tab.',
+        CURRENT: 'Could not retrieve the current active tab.',
+        CREATE: 'Creating a new tab failed.',
+        DISCARD: 'Discarding tab failed.',
+        DUPLICATE: 'Failed to duplicate tab.',
+        GET: 'Failed to retrieve tab.',
+        GROUP: 'Grouping tabs failed.',
+        HIGHLIGHT: 'Highlighting tabs failed.',
+        LANGUAGE: 'Primary language detection failed.',
+        LISTEN: {
+          ACTIVATED: 'Unable to listen for tab activation events.',
+          ATTACHED: 'Unable to listen for tab attachment events.',
+          CREATED: 'Unable to listen for tab creation events.',
+          DETACHED: 'Unable to listen for tab detachment events.',
+          MOVED: 'Unable to listen for tab movement events.',
+          REMOVED: 'Unable to listen for tab removal events.',
+          REPLACED: 'Unable to listen for tab replacement events.',
+          UPDATED: 'Unable to listen for tab update events.',
+          ZOOM: 'Unable to listen for tab zoom change events.',
+        },
+        MESSAGE: 'Failed to send message to tab.',
+        MOVE: 'Moveing tabs failed.',
+        QUERY: 'Failed to retrieve tabs matching query.',
+        RELOAD: 'Reloading tab(s) failed.',
+        REMOVE: 'Closing tabs failed.',
+        UNGROUP: 'Unable to ungroup tabs.',
+        UPDATE: 'Failed to update tab.',
+        ZOOM: {
+          FACTOR: {
+            GET: 'Failed to retrieve zoom factor of tab.',
+            SET: 'Setting zoom factor for tab failed.',
+          },
+          SETTINGS: {
+            GET: 'Failed to retrieve zoom settings of tab.',
+            SET: 'Setting zoom settings for tab failed.',
+          },
+        },
+      },
+
+    },
+    TAG: {
+
+    },
+    PERMISSION: {
+
+    },
+    STORAGE: {
+
+    },
+    SYNC: {
+
+    },
+    VALIDATION: {
+      PERMISSION_DENIED: 'PERMISSION_DENIED',
+      API_UNAVAILABLE: 'API_UNAVAILABLE',
+      INVALID_MESSAGE: 'INVALID_MESSAGE',
+      CONNECTION_ERROR: 'CONNECTION_ERROR',
+      TAB_LIMIT_EXCEEDED: 'TAB_LIMIT_EXCEEDED',
+      TAGGING_REQUIRED: 'TAGGING_REQUIRED'
+    },
+  },
+  RULES: {
+
+  },
+  SESSION: {
+
+  },
+  STATE: {
+
+  },
+});
+
+export const PERMISSION = Object.freeze({
+  PERMISSONS: {
+    ACTIVE_TAB: 'activeTab',
+    ALARMS: 'alarms',
+    BACKGROUND: 'background',
+    BOOKMARKS: 'bookmarks',
+    DECLARATIVE_NET_REQUEST: 'declarativeNetRequest',
+    STORAGE: 'storage',
+    SESSIONS: 'sessions',
+    SCRIPTING: 'scripting',
+    TABS: 'tabs',
+    TAB_GROUPS: 'tabGroups',
+    WEB_NAVIGATION: 'webNavigation',
+  },
+});
+
+export const CONNECTION = Object.freeze({
+  INITIALIZE: 'CONNECTION_INITIALIZED',
+
 });
 
 export const DYNAMIC_CONFIG_KEYS = Object.freeze({
@@ -144,36 +368,7 @@ export const DYNAMIC_CONFIG_KEYS = Object.freeze({
   BATCH: 'BATCH'
 });
 
-export const ACTION_TYPES = Object.freeze({
-  STATE: {
-    RESET: 'RESET_STATE',
-    INITIALIZE: 'INITIALIZE_STATE',
-    RECOVER: 'RECOVER_STATE',
-    SYNC: 'SYNC_STATE'
-  },
-  TAB: {
-    ARCHIVE: 'ARCHIVE_TAB',
-    UPDATE_ACTIVITY: 'UPDATE_TAB_ACTIVITY',
-    SET_TAGGING_PROMPT: 'SET_TAGGING_PROMPT',
-  },
-  SESSION: {
-    SAVE_SESSION: 'SAVE_SESSION',
-    RESTORE_SESSION: 'RESTORE_SESSION',
-    DELETE_SESSION: 'DELETE_SESSION',
-  },
-  RULES: {
-    UPDATE_RULES: 'UPDATE_RULES',
-  },
-});
-
-export const SERVICE_TYPES = Object.freeze({
-  WORKER: 'WORKER',
-  CONTENT: 'CONTENT',
-  POPUP: 'POPUP',
-  BACKGROUND: 'BACKGROUND'
-});
-
-export const VALIDATION_TYPES = Object.freeze({
+export const VALIDATION = Object.freeze({
   TAB: {
     required: ['id', 'url'],
     optional: ['title', 'active', 'discarded'],
@@ -199,17 +394,12 @@ export const VALIDATION_TYPES = Object.freeze({
   }
 });
 
-export const PERMISSIONS = Object.freeze({
-  REQUIRED: {
-    TABS: ['tabs'],
-    MESSAGING: ['runtime'],
-    STORAGE: ['storage'],
-    BOOKMARKS: ['bookmarks']
-  },
-  OPTIONAL: ['declarativeNetRequest']
-});
-
 export const CONFIG = Object.freeze({
+  TYPES: {
+    TIMEOUT: 'TIMEOUT',
+    THRESHOLD: 'THRESHOLD',
+    BATCH_SIZE: 'BATCH_SIZE',
+  },
   TIMEOUTS: {
     SHUTDOWN: 5000,
     SYNC: 10000,
@@ -271,7 +461,12 @@ export const CONFIG = Object.freeze({
     SUSPEND: 1800000
   },
   TABS: {
-    LIMITS: null, // Set below
+    LIMITS: {
+      MIN: 1,
+      MAX: 1000,
+      DEFAULT: 100,
+      WARNING_THRESHOLD: 0.9 // 90% of max tabs
+    },
     PROMPT_THRESHOLD: 0.9,
     REQUIRE_TAG_ON_CLOSE: true
   },
@@ -326,45 +521,11 @@ export const TELEMETRY_CONFIG = {
   THRESHOLDS: CONFIG.THRESHOLDS
 };
 
-export const TAB_PERMISSIONS = Object.freeze({
-  REQUIRED: ['tabs'],
-  OPTIONAL: ['declarativeNetRequest']
-});
-
-export const TAB_OPERATIONS = Object.freeze({
-  DISCARD: 'DISCARD',
-  BOOKMARK: 'BOOKMARK',
-  ARCHIVE: 'ARCHIVE',
-  UPDATE: 'UPDATE',
-  TAG_AND_CLOSE: 'TAG_AND_CLOSE',
-  GET_OLDEST: 'GET_OLDEST',
-  CHECK_LIMIT: 'CHECK_LIMIT',
-  ENFORCE_LIMIT: 'ENFORCE_LIMIT',
-  SUSPEND_INACTIVE: 'SUSPEND_INACTIVE',
-  SUSPEND: 'SUSPEND'
-});
-
 export const INACTIVITY_THRESHOLDS = {
   PROMPT: 600000,
   SUSPEND: 1800000,
   DEFAULT: 600000 // Add this line
 };
-
-export const TAG_TYPES = Object.freeze({
-  AUTOMATED: 'automated',
-  MANUAL: 'manual'
-});
-
-export const RULE_TYPES = Object.freeze({
-  URL_PATTERN: 'urlPattern',
-  TITLE_PATTERN: 'titlePattern'
-});
-
-export const TAG_OPERATIONS = Object.freeze({
-  ADD: 'add',
-  REMOVE: 'remove',
-  UPDATE: 'update'
-});
 
 export const TAG_VALIDATION = Object.freeze({
   TAG: {
@@ -380,16 +541,6 @@ export const BOOKMARK_CONFIG = Object.freeze({
   FOLDER_NAME: 'TabCurator',
   DEFAULT_FOLDER_ID: null // Will be set during initialization
 });
-
-export const TAB_LIMITS = Object.freeze({
-  MIN: 1,
-  MAX: 1000,
-  DEFAULT: 100,
-  WARNING_THRESHOLD: 0.9 // 90% of max tabs
-});
-
-// Set the TABS.LIMITS in CONFIG now that TAB_LIMITS is defined
-CONFIG.TABS.LIMITS = TAB_LIMITS;
 
 export const createTabSelector = (selector) => selector;
 
@@ -437,37 +588,6 @@ export const coreSelectors = {
   anotherSelector: (state) => state.anotherProperty,
   // ...other selectors...
 };
-
-// No longer export Tab, Session, Rule, DeclarativeRule, TabActivity, AppState as values.
-// They remain as JSDoc typedefs only.
-
-export const LOG_CATEGORIES = Object.freeze({
-  SECURITY: 'security',
-  PERFORMANCE: 'performance',
-  STATE: 'state',
-  TELEMETRY: 'telemetry',
-  API: 'api',
-  UI: 'ui',
-  RULES: 'rules',
-  TABS: 'tabs'
-});
-
-export const LOG_LEVELS = Object.freeze({
-  NONE: 0,
-  ERROR: 1,
-  WARN: 2,
-  INFO: 3,
-  DEBUG: 4,
-  ALL: 5,
-  PERFORMANCE: 'performance',
-  SECURITY: 'security',
-  STATE: 'state',
-  TELEMETRY: 'telemetry',
-  API: 'api',
-  UI: 'ui',
-  RULES: 'rules',
-  TABS: 'tabs'
-});
 
 /**
  * @typedef {Object} ConfigDefaults
@@ -546,7 +666,6 @@ export const CONFIG_SCHEMAS = Object.freeze({
     minimum: CONFIG_RANGES.BATCH.size.min,
     maximum: CONFIG_RANGES.BATCH.size.max
   },
-  // Include RATE_LIMITS here instead of adding it after freeze
   RATE_LIMITS: {
     API_CALLS: {
       WINDOW_MS: 60000, // 1 minute window
@@ -555,11 +674,7 @@ export const CONFIG_SCHEMAS = Object.freeze({
   }
 });
 
-export const CONFIG_TYPES = Object.freeze({
-  TIMEOUT: 'timeout',
-  THRESHOLD: 'threshold',
-  BATCH_SIZE: 'batchSize'
-});
+
 
 export const validateConfigValue = (type, value) => {
   const schema = CONFIG_SCHEMAS[type];
@@ -627,16 +742,6 @@ export const SLICE_SCHEMAS = Object.freeze({
   }
 });
 
-export const VALIDATION_ERRORS = {
-  // Define your validation errors here
-  PERMISSION_DENIED: 'Permission Denied',
-  API_UNAVAILABLE: 'API Unavailable',
-  INVALID_MESSAGE: 'Invalid Message',
-  CONNECTION_ERROR: 'Connection Error',
-  TAB_LIMIT_EXCEEDED: 'Tab Limit Exceeded',
-  TAGGING_REQUIRED: 'Tagging Required'
-};
-
 // Replace Ajv schemas with Yup schemas
 export const VALIDATION_SCHEMAS = {
   tab: yup.object({
@@ -649,10 +754,10 @@ export const VALIDATION_SCHEMAS = {
   message: yup.object().shape({
     type: yup.string()
       .required()
-      .oneOf(Object.values(MESSAGE_TYPES)),
+      .oneOf(Object.values(messageTypes)),
     payload: yup.mixed().required(), // Allow empty object
     action: yup.string().when('type', {
-      is: (type) => [MESSAGE_TYPES.TAB_ACTION, MESSAGE_TYPES.SESSION_ACTION].includes(type),
+      is: (type) => [messageTypes.TAB_ACTION, messageTypes.SESSION_ACTION].includes(type),
       then: yup.string().required(),
       otherwise: yup.string().optional()
     })
@@ -661,18 +766,18 @@ export const VALIDATION_SCHEMAS = {
 
 VALIDATION_SCHEMAS.message = yup.object().shape({
   type: yup.string().oneOf([
-    MESSAGE_TYPES.STATE_SYNC,
-    MESSAGE_TYPES.CONNECTION_ACK,
-    MESSAGE_TYPES.ERROR,
-    MESSAGE_TYPES.TAB_ACTION,
-    MESSAGE_TYPES.STATE_UPDATE,
-    MESSAGE_TYPES.RULE_UPDATE,
-    MESSAGE_TYPES.SESSION_ACTION,
-    MESSAGE_TYPES.SERVICE_WORKER_UPDATE,
-    MESSAGE_TYPES.TAG_ACTION,
-    MESSAGE_TYPES.TEST_MESSAGE, // Added TEST_MESSAGE
-    MESSAGE_TYPES.GET_SESSIONS, // Added GET_SESSIONS
-    MESSAGE_TYPES.INIT_CHECK // Added INIT_CHECK
+    messageTypes.STATE_SYNC,
+    messageTypes.CONNECTION_ACK,
+    messageTypes.ERROR,
+    messageTypes.TAB_ACTION,
+    messageTypes.STATE_UPDATE,
+    messageTypes.RULE_UPDATE,
+    messageTypes.SESSION_ACTION,
+    messageTypes.SERVICE_WORKER_UPDATE,
+    messageTypes.TAG_ACTION,
+    messageTypes.TEST_MESSAGE, // Added TEST_MESSAGE
+    messageTypes.GET_SESSIONS, // Added GET_SESSIONS
+    messageTypes.INIT_CHECK // Added INIT_CHECK
   ]).required(),
   payload: yup.mixed().required(),
 });

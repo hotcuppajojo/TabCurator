@@ -1,9 +1,7 @@
-// build-scripts/build-chrome.mjs
-
 import fs from 'fs-extra';
 import path from 'path';
 import { execSync } from 'child_process';
-import { minify } from 'terser'; // Changed from `import terser from 'terser';`
+import { minify } from 'terser';
 import { fileURLToPath } from 'url';
 
 // Handle __dirname and __filename in ES Modules
@@ -27,7 +25,7 @@ function cleanBuild() {
 function copyNonCompiledSource() {
   console.log('Copying non-compiled source files...');
   
-  const dirsToCopy = ['utils'];
+  const dirsToCopy = ['utils', 'rules'];
 
   dirsToCopy.forEach(dir => {
     const sourcePath = path.join(PROJECT_DIR, dir);
@@ -40,7 +38,6 @@ function copyNonCompiledSource() {
 }
 
 // Copy test files (including test/test.html) directly from project root
-/*
 function copyTestFiles() {
   console.log('Copying test files...');
   const testSrc = path.join(PROJECT_DIR, 'test');
@@ -53,15 +50,13 @@ function copyTestFiles() {
     console.warn('No test directory found at project root, skipping test file copy.');
   }
 }
-*/
 
-// Separate browser-specific files to support multi-browser architecture
+// Copy browser-specific files that aren't handled by webpack
 function copyChromeFiles() {
-  console.log('Copying Chrome-specific files...');
-  fs.copySync(path.join(CHROME_DIR, 'manifest.json'), path.join(BUILD_DIR, 'manifest.json'));
-  fs.copySync(path.join(CHROME_DIR, 'icons'), path.join(BUILD_DIR, 'icons'));
-  fs.copySync(path.join(PROJECT_DIR, 'rules'), path.join(BUILD_DIR, 'rules'));
-  fs.copySync(path.join(PROJECT_DIR, 'popup', 'popup.css'), path.join(BUILD_DIR, 'popup', 'popup.css')); // Ensure popup.css is copied
+  console.log('Copying additional Chrome-specific files...');
+  // Webpack already copies manifest.json, icons, and rules
+  // Only copy files not handled by webpack here
+  fs.copySync(path.join(PROJECT_DIR, 'popup', 'popup.css'), path.join(BUILD_DIR, 'popup', 'popup.css'));
 }
 
 // Minify assets to reduce extension size and improve load times
@@ -108,35 +103,66 @@ function packageExtension() {
 
 // Sequential build process ensures dependency order and clean state
 export async function buildChrome() {
-
   try {
     cleanBuild();
-    
-    // Run Webpack first to generate the output files
-    execSync('webpack --env target=chrome --config webpack.config.js', {
-      stdio: 'inherit',
-      env: { ...process.env, NODE_ENV: 'production' }
-    });
-    
-    // After webpack outputs, copy necessary files
+
+    // Verify source files exist before building
+    const requiredPaths = [
+      path.join(CHROME_DIR, 'manifest.json'),
+      path.join(PROJECT_DIR, 'popup'),
+      path.join(PROJECT_DIR, 'options'),
+      path.join(PROJECT_DIR, 'background')
+    ];
+
+    const optionalPaths = [
+      path.join(CHROME_DIR, 'icons')
+    ];
+
+    for (const requiredPath of requiredPaths) {
+      if (!fs.existsSync(requiredPath)) {
+        throw new Error(`Required path does not exist: ${requiredPath}`);
+      }
+    }
+
+    for (const optionalPath of optionalPaths) {
+      if (!fs.existsSync(optionalPath)) {
+        console.warn(`\u26a0\ufe0f Optional path not found: ${optionalPath}`);
+      }
+    }
+
+    // Inject private key into manifest if key.pem exists
+    const keyPath = path.join(PROJECT_DIR, 'key.pem');
+    const manifestPath = path.join(CHROME_DIR, 'manifest.json');
+    let manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (fs.existsSync(keyPath)) {
+      const key = fs.readFileSync(keyPath, 'utf8').replace(/\r?\n/g, '');
+      if (manifest.key && manifest.key === '__EXTENSION_PRIVATE_KEY__') {
+        manifest.key = key;
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+      }
+    }
+
+    console.log('Running webpack build...');
+    execSync('webpack --env target=chrome --config webpack.config.js', { stdio: 'inherit' });
+
+    // After webpack outputs, copy additional files
     copyChromeFiles();
     copyNonCompiledSource();
-    // copyTestFiles();
+    copyTestFiles();
 
     await optimizeAssets();
-    
+
+    // Ensure dist directory exists before packaging
+    fs.ensureDirSync(DIST_DIR);
     packageExtension();
     console.log('Chrome build completed successfully.');
   } catch (error) {
     console.error('Build failed:', error.message);
-    process.exit(1);
+    throw error;
   }
 }
 
 // Direct execution for CLI usage and CI/CD integration
 if (__filename === process.argv[1]) { // Changed condition to properly compare file paths
-  buildChrome().catch(err => {
-    console.error('Fatal error:', err);
-    process.exit(1);
-  });
+  buildChrome();
 }

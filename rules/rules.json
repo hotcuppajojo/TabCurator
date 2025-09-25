@@ -3,11 +3,11 @@
     "id": 1,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "allow"
     },
     "condition": {
-      "urlFilter": "*://unwanted-domain.com/*",
-      "resourceTypes": ["main_frame", "sub_frame"]
+      "urlFilter": "*",
+      "resourceTypes": ["main_frame"]
     }
   }
 ]

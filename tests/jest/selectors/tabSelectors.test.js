@@ -1,108 +1,58 @@
-// tests/jest/selectors/tabSelectors.test.js
-
-import { configureStore } from '@reduxjs/toolkit';
-import { CONFIG } from '../mocks/constantsMock';
-
-// Create test reducer with proper activity state handling
-const tabManagementReducer = (state = {
-  tabs: [],
-  activity: {},
-  metadata: {}
-}, action) => {
-  switch (action.type) {
-    case 'tabManagement/setTabs':
-      return {
-        ...state,
-        tabs: action.payload
-      };
-    case 'tabManagement/setActivity':
-      return {
-        ...state,
-        activity: action.payload
-      };
-    case 'RESET_STATE':
-      return {
-        tabs: [],
-        activity: {},
-        metadata: {}
-      };
-    default:
-      return state;
-  }
-};
-
-// Create the store factory
-const createTestStore = () => configureStore({
-  reducer: {
-    tabManagement: tabManagementReducer
-  }
-});
-
-// Update selectors to properly check activity state
-const selectors = {
-  selectTabs: state => state.tabManagement.tabs,
-  selectActiveTabs: state => state.tabManagement.tabs.filter(tab => tab.active),
-  selectInactiveTabs: state => {
-    const now = Date.now();
-    const activity = state.tabManagement.activity;
-    return state.tabManagement.tabs.filter(tab => {
-      const tabActivity = activity[tab.id];
-      if (!tabActivity) return false;
-      return (now - tabActivity.lastAccessed) > (CONFIG.INACTIVITY_THRESHOLDS?.PROMPT || 600000);
-    });
-  }
-};
+import { coreSelectors, selectors } from '../../../utils/core/state.js';
 
 describe('Tab Selectors', () => {
-  let store;
-  let now;
+  const mockState = {
+    tabManagement: {
+      tabs: [
+        { id: 1, title: 'Tab 1', url: 'https://example1.com' },
+        { id: 2, title: 'Tab 2', url: 'https://example2.com' }
+      ],
+      activity: {
+        1: { lastAccessed: 1000 },
+        2: { lastAccessed: 2000 }
+      },
+      metadata: {
+        1: { tags: ['work'] },
+        2: { tags: ['personal'] }
+      },
+      suspended: {},
+      oldestTab: { id: 1, lastAccessed: 1000 }
+    },
+    sessions: [
+      { id: 'session1', name: 'Work Session' }
+    ],
+    settings: {
+      maxTabs: 50
+    }
+  };
 
-  beforeEach(() => {
-    now = Date.now();
-    store = createTestStore();
+  test('selectTabs returns tabs array', () => {
+    const tabs = coreSelectors.selectTabs(mockState);
+    expect(tabs).toEqual(mockState.tabManagement.tabs);
   });
 
-  test('should select active tabs', () => {
-    const mockTabs = [
-      { id: 1, active: true },
-      { id: 2, active: false }
-    ];
-
-    store.dispatch({
-      type: 'tabManagement/setTabs',
-      payload: mockTabs
-    });
-
-    const state = store.getState();
-    const activeTabs = selectors.selectActiveTabs(state);
-    expect(activeTabs).toHaveLength(1);
-    expect(activeTabs[0].id).toBe(1);
+  test('selectTabById returns correct tab', () => {
+    const tab = coreSelectors.selectTabById(mockState, 1);
+    expect(tab).toEqual(mockState.tabManagement.tabs[0]);
   });
 
-  test('should select inactive tabs based on activity', () => {
-    const mockTabs = [
-      { id: 1 },
-      { id: 2 }
-    ];
+  test('selectTabActivity returns activity map', () => {
+    const activity = coreSelectors.selectTabActivity(mockState);
+    expect(activity).toEqual(mockState.tabManagement.activity);
+  });
 
-    const mockActivity = {
-      1: { lastAccessed: now - 3600000 }, // 1 hour ago
-      2: { lastAccessed: now } // current
-    };
+  test('selectOldestTab returns oldest tab', () => {
+    const oldestTab = coreSelectors.selectOldestTab(mockState);
+    expect(oldestTab).toEqual(mockState.tabManagement.oldestTab);
+  });
 
-    store.dispatch({
-      type: 'tabManagement/setTabs',
-      payload: mockTabs
-    });
+  test('selectSettings returns settings', () => {
+    const settings = coreSelectors.selectSettings(mockState);
+    expect(settings).toEqual(mockState.settings);
+  });
 
-    store.dispatch({
-      type: 'tabManagement/setActivity',
-      payload: mockActivity
-    });
-
-    const state = store.getState();
-    const inactiveTabs = selectors.selectInactiveTabs(state);
-    expect(inactiveTabs).toHaveLength(1);
-    expect(inactiveTabs[0].id).toBe(1); // Fixed the syntax error here
+  test('selectMaxTabs returns max tabs setting', () => {
+    const maxTabs = coreSelectors.selectMaxTabs(mockState);
+    expect(maxTabs).toBe(50);
   });
 });

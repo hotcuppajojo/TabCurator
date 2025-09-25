@@ -6,7 +6,21 @@
  */
 
 import browser from 'webextension-polyfill';
-import { MESSAGE_TYPES, TAB_OPERATIONS } from '../utils/constants.js'; // Add TAB_OPERATIONS import
+import { 
+  MESSAGE_TYPES, 
+  ACTION, 
+  sendMessageToBackground,
+  ERROR_TYPES,
+  recordTelemetry,
+  TELEMETRY_EVENTS
+} from '../utils/core/index.js';
+
+// Simple logger for content script
+const logger = {
+  warn: (msg, data) => console.warn(`[TabCurator] ${msg}`, data),
+  error: (msg, data) => console.error(`[TabCurator] ${msg}`, data),
+  info: (msg, data) => console.info(`[TabCurator] ${msg}`, data)
+};
 
 // Debounce helper
 const debounce = (fn, delay) => {
@@ -17,22 +31,26 @@ const debounce = (fn, delay) => {
   };
 };
 
-// Send activity updates to service worker
+// Send activity updates to service worker using the core messaging utilities
 const reportActivity = debounce(async () => {
   try {
-    await browser.runtime.sendMessage({
+    // Use core messaging to send activity update
+    await sendMessageToBackground({
       type: MESSAGE_TYPES.TAB_ACTION,
-      action: TAB_OPERATIONS.UPDATE,
+      action: ACTION.TAB.UPDATE,
       payload: {
-        tabId: null, // Will be resolved to current tab
-        properties: {
-          lastAccessed: Date.now()
-        }
+        lastAccessed: Date.now()
       }
     });
+    
+    // Optionally record telemetry for active tab usage
+    recordTelemetry(TELEMETRY_EVENTS.TAB_ACTIVITY, {
+      timestamp: Date.now()
+    });
   } catch (error) {
+    // Only log non-extension-invalidation errors
     if (!error.message.includes('Extension context invalidated')) {
-      logger.warn('Failed to report activity:', error);
+      logger.warn('Failed to report activity:', { error: error.message });
     }
   }
 }, 1000);
@@ -46,8 +64,12 @@ const reportActivity = debounce(async () => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     reportActivity();
+    logger.info('Tab became visible, reporting activity');
   }
 });
+
+// Initial activity report when content script loads
+reportActivity();
 
 // Cleanup on unload
 window.addEventListener('beforeunload', () => {

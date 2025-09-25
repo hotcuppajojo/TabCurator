@@ -1,8 +1,17 @@
 # TabCurator
 
-## An Advanced Cross-Browser Tab Management Extension
+TabCurator is a browser extension for advanced tab management with intelligent grouping, automatic organization, and tab lifecycle features.
 
-TabCurator is a browser extension designed to streamline tab management for users who handle multiple tabs daily. Key features include intelligent grouping, memory optimization through tab suspension, and session management across Chrome, Firefox, and Safari.
+## Architecture
+
+TabCurator follows a modular architecture with unidirectional data flow for predictable state management and clear separation of concerns.
+
+### Core Architecture Components
+
+- **State Management**: Centralized store for managing the state of tabs, groups, and user preferences.
+- **UI Components**: Modular and reusable components for the popup, options page, and other UI elements.
+- **Background Scripts**: Handle events, manage tab lifecycle, and perform background processing.
+- **Content Scripts**: Interact with web pages and modify their content based on user actions or predefined rules.
 
 ## Features
 

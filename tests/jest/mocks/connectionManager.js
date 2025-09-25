@@ -9,5 +9,8 @@ export const connection = {
     successful: 0,
     failed: 0,
     activeConnections: 0
-  })
+  }),
+  connectToBackground: jest.fn(),
+  sendMessageToBackground: jest.fn(),
+  listenForMessages: jest.fn()
 };

@@ -6,10 +6,10 @@ module.exports = {
   presets: [
     ["@babel/preset-env", {
       targets: { 
-        chrome: "88"
+        node: "current" // Use current Node version for tests
       },
-      modules: "auto",
-      useBuiltIns: "entry",
+      modules: "cjs", // Convert to CommonJS for Jest
+      useBuiltIns: "usage",
       corejs: 3
     }],
     ["@babel/preset-react", {
@@ -18,7 +18,7 @@ module.exports = {
   ],
   plugins: [
     ["@babel/plugin-transform-runtime", { 
-      corejs: 3,
+      corejs: false, // Disable corejs in runtime to avoid conflicts
       helpers: true,
       regenerator: true
     }]

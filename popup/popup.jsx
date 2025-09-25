@@ -3,12 +3,20 @@ import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom';
 import { Provider } from 'react-redux';
 import stateManager from '../utils/stateManager.js';
-import { connection } from '../utils/connectionManager.js'; // Updated import
+import connectionManager from '../utils/connectionManager.js';  // Use correct import name
 import browser from 'webextension-polyfill';
 import { useDispatch, useSelector } from 'react-redux';
-import { MESSAGE_TYPES, TAB_OPERATIONS, ACTION_TYPES } from '../utils/constants.js';
+import { 
+  MESSAGE_TYPES, 
+  ACTION,
+  CONFIG,
+  formatMessage, 
+  MESSAGES,
+  recordTelemetry,
+  TELEMETRY_EVENTS
+} from '../utils/core/index.js';  // Use core imports
 import TabLimitPrompt from './TabLimitPrompt.jsx';
-import { logger } from '../utils/logger.js'; // Add logger import
+import { logger } from '../utils/logger.js';
 
 const Popup = () => {
   const [tabs, setTabs] = useState([]);
@@ -17,7 +25,6 @@ const Popup = () => {
   const [errorMsg, setErrorMsg] = useState('');
   const [connectionId, setConnectionId] = useState(null);
   const [tabCount, setTabCount] = useState(0);
-  const [port, setPort] = useState(null);
   const [connected, setConnected] = useState(false);
 
   const [connectionState, setConnectionState] = useState({
@@ -41,49 +48,29 @@ const Popup = () => {
       }));
 
       try {
-        // Try to connect and validate background initialization
-        const cId = await connection.connect({
-          name: 'popup',
-          timeout: 3000
-        });
-
-        const p = connection.getPort(cId);
-        if (!p) {
-          throw new Error('Failed to retrieve port');
-        }
-
+        // Connect using connectionManager
+        const connection = await connectionManager.connect();
+        
         setConnected(true);
-        setConnectionId(cId);
-        setPort(p);
+        setConnectionId(connection.connectionId);
         setConnectionState({
           isConnecting: false,
           attempts: 0,
           error: null
         });
 
-        // Setup message listeners after successful connection
-        p.onMessage.addListener((msg) => {
-          if (msg.error) {
-            setErrorMsg(msg.error);
-            return;
-          }
-          if (msg.type === MESSAGE_TYPES.STATE_UPDATE) {
-            loadTabs();
-          }
+        // Initial data loading after connection
+        await loadTabs();
+        await loadSessions();
+        
+        logger.info('Popup connected to background service worker');
+        
+        // Record successful connection
+        recordTelemetry(TELEMETRY_EVENTS.POPUP_OPENED, {
+          connectionId: connection.connectionId
         });
-
-        p.onDisconnect.addListener(() => {
-          setConnected(false);
-          setPort(null);
-          
-          const error = browser.runtime.lastError;
-          if (error?.message.includes('Extension context invalidated')) {
-            setTimeout(connectWithRetry, 1000);
-          }
-        });
-
       } catch (error) {
-        console.error('Connection failed:', error);
+        logger.error('Connection failed:', { error: error.message });
         setConnectionState(prev => ({
           isConnecting: false,
           attempts: prev.attempts + 1,
@@ -91,6 +78,7 @@ const Popup = () => {
         }));
 
         if (connectionState.attempts < 3) {
+          // Exponential backoff for retries
           setTimeout(connectWithRetry, 1000 * Math.pow(2, connectionState.attempts));
         }
       }
@@ -99,8 +87,9 @@ const Popup = () => {
     connectWithRetry();
 
     return () => {
-      if (port) {
-        port.disconnect();
+      // Clean up on unmount
+      if (connectionId) {
+        connectionManager.cleanup();
       }
     };
   }, []);
@@ -115,22 +104,19 @@ const Popup = () => {
       if (allTabs.length >= maxTabs) {
         // Find and close the oldest tab
         try {
-          const oldest = await sendMessage({
-            type: MESSAGE_TYPES.TAB_ACTION,
-            action: TAB_OPERATIONS.GET_OLDEST,
-            payload: {} // Added empty payload
-          });
-
-          if (oldest) {
-            setIsTaggingPromptVisible(true);
-            // Prevent new tab creation if we're at the limit
-            const currentTab = await browser.tabs.getCurrent();
-            if (currentTab && allTabs.length > maxTabs) {
-              await browser.tabs.remove(currentTab.id);
+          if (connected) {
+            const response = await sendMessage({
+              type: MESSAGE_TYPES.TAB_ACTION,
+              action: ACTION.TAB.GET_OLDEST,
+              payload: {}
+            });
+            
+            if (response && response.oldestTab) {
+              setIsTaggingPromptVisible(true);
             }
           }
         } catch (error) {
-          console.error('Error handling tab limit:', error);
+          logger.error('Error handling tab limit:', { error: error.message });
         }
       }
     };
@@ -138,7 +124,7 @@ const Popup = () => {
     checkTabLimit();
     
     // Listen for tab changes
-    const tabListener = async (tab) => {
+    const tabListener = async () => {
       await checkTabLimit();
     };
 
@@ -149,23 +135,19 @@ const Popup = () => {
       browser.tabs.onCreated.removeListener(tabListener);
       browser.tabs.onRemoved.removeListener(tabListener);
     };
-  }, [maxTabs, connectionId]);
+  }, [maxTabs, connectionId, connected]);
 
   // Updated sendMessage function
   const sendMessage = async (message) => {
+    if (!connected) {
+      throw new Error('Not connected to background service');
+    }
+    
     try {
-      const response = await connection.sendMessage(connectionId, message);
-      if (!response) {
-        throw new Error('No response received');
-      }
-  
-      if (response.error) {
-        throw new Error(response.error);
-      }
-  
-      return response;
+      // Use connectionManager.sendMessage directly
+      return await connectionManager.sendMessage(message);
     } catch (error) {
-      logger.error('Send Message Error:', error); // Replace console.error
+      logger.error('Send Message Error:', { error: error.message });
       throw error;
     }
   };
@@ -175,9 +157,9 @@ const Popup = () => {
       setErrorMsg('');
       const fetchedTabs = await browser.tabs.query({});
       setTabs(fetchedTabs);
-      logger.info('Tabs loaded successfully.'); // Add logging
+      logger.info('Tabs loaded successfully.');
     } catch (error) {
-      logger.error('Error loading tabs:', error); // Replace console.error
+      logger.error('Error loading tabs:', { error: error.message });
       setErrorMsg('Error loading tabs');
     }
   };
@@ -187,18 +169,26 @@ const Popup = () => {
   };
 
   const suspendInactiveTabs = async () => {
+    if (!connected) {
+      setErrorMsg('Not connected to background service');
+      return;
+    }
+    
     try {
       const response = await sendMessage({
         type: MESSAGE_TYPES.TAB_ACTION,
-        action: TAB_OPERATIONS.SUSPEND_INACTIVE,
-        payload: {} // Empty payload for this operation
+        action: ACTION.TAB.SUSPEND_INACTIVE,
+        payload: {}
       });
-      if (response.success) {
-        logger.info(`Suspended ${response.suspendedTabs} inactive tabs.`);
+      
+      if (response && response.success) {
+        const count = response.suspendedCount || 0;
+        logger.info(formatMessage(MESSAGES.TAB.SUSPENDED, { count }));
       }
+      
       await loadTabs(); // Refresh UI after operation
     } catch (error) {
-      logger.error('Failed to suspend tabs:', error);
+      logger.error('Failed to suspend tabs:', { error: error.message });
       setErrorMsg(error.message);
     }
   };
@@ -210,57 +200,62 @@ const Popup = () => {
     try {
       await sendMessage({
         type: MESSAGE_TYPES.SESSION_ACTION,
-        action: ACTION_TYPES.SESSION.SAVE_SESSION,
-        payload: { name: sessionName }
+        action: ACTION.SESSION.SAVE,
+        payload: { name: sessionName, timestamp: Date.now() }
       });
+      
       await loadSessions();
+      logger.info(formatMessage(MESSAGES.SESSION.SAVED, { name: sessionName }));
     } catch (error) {
-      logger.error('Failed to save session:', error);
+      logger.error('Failed to save session:', { error: error.message });
       setErrorMsg(error.message);
     }
   };
 
   const loadSessions = async () => {
     try {
-      logger.info('Sending getSessions message...');
       const response = await sendMessage({
         type: MESSAGE_TYPES.GET_SESSIONS,
         payload: {}
       });
+      
       setSessions(response.sessions || []);
     } catch (error) {
-      logger.error('Failed to load sessions:', error);
-      setErrorMsg(error.message);
+      logger.error('Failed to load sessions:', { error: error.message });
+      setErrorMsg('Failed to load sessions');
       setSessions([]);
     }
   };
 
   const restoreSession = async (sessionName) => {
     try {
-      const message = {
+      await sendMessage({
         type: MESSAGE_TYPES.SESSION_ACTION,
-        action: ACTION_TYPES.SESSION.RESTORE_SESSION,
+        action: ACTION.SESSION.RESTORE,
         payload: { sessionName }
-      };
-      await sendMessage(message);
-      logger.info(`Session "${sessionName}" restored successfully.`);
+      });
+      
+      logger.info(formatMessage(MESSAGES.SESSION.RESTORED, { name: sessionName }));
     } catch (error) {
-      logger.error(`Error restoring session "${sessionName}":`, error);
+      logger.error(`Error restoring session:`, { name: sessionName, error: error.message });
     }
   };
 
   const handleTagSubmit = async (tag) => {
     if (!oldestTab) return;
+    
     try {
       await sendMessage({
         type: MESSAGE_TYPES.TAB_ACTION,
-        action: TAB_OPERATIONS.TAG_AND_CLOSE,
+        action: ACTION.TAB.TAG_AND_CLOSE,
         payload: { tabId: oldestTab.id, tag }
       });
+      
       setIsTaggingPromptVisible(false);
       await loadTabs();
+      logger.info(formatMessage(MESSAGES.TAB.TAGGED, { tag }));
     } catch (error) {
-      logger.error(`Failed to tag tab: ${error.message}`);
+      logger.error(`Failed to tag tab:`, { error: error.message });
     }
   };
   

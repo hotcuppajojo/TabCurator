@@ -40,43 +40,32 @@ jest.mock('webextension-polyfill', () => ({
   },
 }));
 
-// Mock constants like in the passing test
-jest.mock('../../utils/constants.js', () => ({
+// Mock core/index.js instead of constants.js
+jest.mock('../../utils/core/index.js', () => ({
   CONFIG: {
     INACTIVITY_THRESHOLDS: {
       DEFAULT: 60,
       PROMPT: 600000,
       SUSPEND: 1800000,
-    }
-  },
-  TAB_OPERATIONS: {
-    TAG_AND_CLOSE: 'TAG_AND_CLOSE'
-  },
-  SERVICE_TYPES: {
-    WORKER: 'WORKER',
-    CONTENT: 'CONTENT',
-    POPUP: 'POPUP',
-    BACKGROUND: 'BACKGROUND'
-  },
-  ACTION_TYPES: {
-    STATE: {
-      INITIALIZE: 'INITIALIZE_STATE',
-      RECOVER: 'RECOVER_STATE',
-      SYNC: 'SYNC_STATE'
     },
-    TAB: {
-      ARCHIVE: 'ARCHIVE_TAB',
-      UPDATE_ACTIVITY: 'UPDATE_TAB_ACTIVITY'
+    TAB_LIMITS: {
+      MIN: 1,
+      MAX: 1000,
+      DEFAULT: 30,
+      WARNING_THRESHOLD: 0.9
     }
   },
-  // Add the missing selectors
-  selectors: {
-    selectTabs: state => state?.tabManagement?.tabs || [],
-    selectArchivedTabs: state => state?.archivedTabs || {},
-    selectTabActivity: state => state?.tabManagement?.activity || {},
-    selectActiveTabs: state => state?.tabManagement?.tabs?.filter(tab => tab.active) || [],
-    selectInactiveTabs: state => state?.tabManagement?.tabs?.filter(tab => !tab.active) || [],
-    selectMatchingRules: state => state?.rules || []
+  MESSAGE_TYPES: {
+    TAB_ACTION: 'TAB_ACTION'
+  },
+  ACTION: {
+    TAB: {
+      TAG_AND_CLOSE: 'TAG_AND_CLOSE'
+    }
+  },
+  recordTelemetry: jest.fn(),
+  TELEMETRY_EVENTS: {
+    TAB_CLOSED: 'TAB_CLOSED'
   }
 }));
 

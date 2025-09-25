@@ -1,21 +1,27 @@
 import { jest } from '@jest/globals';
 
-// Mock CONFIG before other imports
-jest.mock('../../../utils/constants.js', () => ({
+// Mock CONFIG from core/index.js instead of constants.js
+jest.mock('../../../utils/core/index.js', () => ({
   CONFIG: {
     TIMEOUTS: {
       CLEANUP: 300000 // 5 minutes in milliseconds
     }
   },
-  MESSAGE_TYPES: {
-    STATE_SYNC: 'STATE_SYNC',
-    ERROR: 'ERROR',
-    TAB_ACTION: 'TAB_ACTION'
+  // Mock other exports that might be imported
+  ACTION: {},
+  STATE: {},
+  MESSAGE_TYPES: {},
+  TELEMETRY_EVENTS: {},
+  recordTelemetry: jest.fn(),
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn()
   }
 }));
 
 // Import the mocked CONFIG after the mock is defined
-const { CONFIG } = require('../../../utils/constants.js');
+const { CONFIG } = require('../../../utils/core/index.js');
 
 // First define base mocks
 const mockOnMessageAddListener = jest.fn();

@@ -2,8 +2,14 @@
 import React from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import browser from 'webextension-polyfill';
-import { TAB_OPERATIONS } from '../utils/constants';
-import { actions } from '../utils/stateManager.js'; // Adjust the import path if necessary
+import { 
+  MESSAGE_TYPES, 
+  ACTION,
+  recordTelemetry,
+  TELEMETRY_EVENTS
+} from '../utils/core/index.js';
+import connectionManager from '../utils/connectionManager.js';
+import { logger } from '../utils/logger.js';
 
 const TabLimitPrompt = () => {
   const dispatch = useDispatch();
@@ -15,16 +21,20 @@ const TabLimitPrompt = () => {
     if (!oldestTab) return;
 
     try {
-      await browser.runtime.sendMessage({
-        type: 'TAB_ACTION',
-        action: TAB_OPERATIONS.TAG_AND_CLOSE,
+      await connectionManager.sendMessage({
+        type: MESSAGE_TYPES.TAB_ACTION,
+        action: ACTION.TAB.TAG_AND_CLOSE,
         payload: {
           tabId: oldestTab.id,
           tag: 'auto-closed'
         }
       });
 
-      dispatch(actions.tabManagement.removeTab(oldestTab.id));
+      // Record telemetry for tab auto-closing
+      recordTelemetry(TELEMETRY_EVENTS.TAB_CLOSED, {
+        reason: 'tab-limit',
+        tabId: oldestTab.id
+      });
 
       // Show notification
       await browser.notifications.create({
@@ -34,7 +44,7 @@ const TabLimitPrompt = () => {
         iconUrl: 'icon-48.png'
       });
     } catch (error) {
-      console.error('Failed to close oldest tab:', error);
+      logger.error('Failed to close oldest tab:', { error: error.message });
     }
   };
 
