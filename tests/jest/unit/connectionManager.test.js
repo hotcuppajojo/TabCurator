@@ -31,6 +31,7 @@ jest.mock('../../../utils/stateManager.js', () => ({
   handleTabAction: jest.fn(),
   handleSessionAction: jest.fn(),
   handleTagAction: jest.fn(),
+  handleBookmarkAction: jest.fn(),
   handleBackgroundMessage: jest.fn(),
   validateStateUpdate: jest.fn(),
   initialized: true,
@@ -38,10 +39,12 @@ jest.mock('../../../utils/stateManager.js', () => ({
 }));
 
 jest.mock('../../../utils/logger.js', () => ({
-  info: jest.fn(),
-  error: jest.fn(),
-  warn: jest.fn(),
-  debug: jest.fn()
+  logger: {
+    info: jest.fn(),
+    error: jest.fn(),
+    warn: jest.fn(),
+    debug: jest.fn()
+  }
 }));
 
 describe('ConnectionManager', () => {
@@ -52,32 +55,33 @@ describe('ConnectionManager', () => {
 
   describe('Initialization', () => {
     test('initialize should set up the connection manager', async () => {
-      await connectionManager.initialize();
+      await connectionManager.initialize(stateManager);
       
       expect(connectionManager.initialized).toBe(true);
-      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('ConnectionManager initialized'));
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('ConnectionManager initialized'), expect.any(Object));
     });
 
     test('initialize should handle errors gracefully', async () => {
-      browser.runtime.connect.mockImplementationOnce(() => {
-        throw new Error('Connection error');
-      });
+      stateManager.initialized = false;
       
-      await expect(connectionManager.initialize()).rejects.toThrow('Connection error');
-      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Failed to initialize'), expect.any(Object));
+      await expect(connectionManager.initialize(stateManager)).rejects.toThrow('Valid initialized StateManager instance required');
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Failed to initialize ConnectionManager'), expect.any(Object));
+      
+      stateManager.initialized = true;
     });
 
     test('initialize should only initialize once', async () => {
-      await connectionManager.initialize();
-      await connectionManager.initialize();
+      await connectionManager.initialize(stateManager);
+      await connectionManager.initialize(stateManager);
       
-      expect(browser.runtime.connect).toHaveBeenCalledTimes(1);
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('ConnectionManager initialized'), expect.any(Object));
+      expect(logger.info).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('Connection Management', () => {
     beforeEach(async () => {
-      await connectionManager.initialize();
+      await connectionManager.initialize(stateManager);
     });
 
     test('connect should create a port connection', () => {
@@ -106,7 +110,7 @@ describe('ConnectionManager', () => {
 
   describe('Message Handling', () => {
     beforeEach(async () => {
-      await connectionManager.initialize();
+      await connectionManager.initialize(stateManager);
     });
 
     test('sendMessage should route to the appropriate handler based on message type', async () => {
@@ -180,7 +184,7 @@ describe('ConnectionManager', () => {
       jest.setTimeout(10000);
     });
     beforeEach(async () => {
-      await connectionManager.initialize();
+      await connectionManager.initialize(stateManager);
     });
 
     test('_routeMessage should delegate to appropriate stateManager handler', async () => {
@@ -224,18 +228,16 @@ describe('ConnectionManager', () => {
   });
 
   describe('Error Handling', () => {
-    test('should handle connection errors gracefully', async () => {
-      browser.runtime.connect.mockImplementationOnce(() => {
-        throw new Error('Connection error');
-      });
-      
-      await expect(connectionManager.initialize()).rejects.toThrow('Connection error');
+    test('should handle missing stateManager gracefully', async () => {
+      await expect(connectionManager.initialize()).rejects.toThrow('Valid initialized StateManager instance required');
       expect(logger.error).toHaveBeenCalled();
     });
-    
+
     test('should handle message routing errors', async () => {
+      await connectionManager.initialize(stateManager);
+
       stateManager.handleTabAction.mockRejectedValueOnce(new Error('Routing error'));
-      
+
       await expect(connectionManager._routeMessage({
         type: MESSAGE_TYPES.TAB_ACTION,
         action: ACTION.TAB.GET,
@@ -246,7 +248,7 @@ describe('ConnectionManager', () => {
 
   describe('Cleanup', () => {
     beforeEach(async () => {
-      await connectionManager.initialize();
+      await connectionManager.initialize(stateManager);
     });
 
     test('cleanup should remove all connections and listeners', async () => {
@@ -262,7 +264,7 @@ describe('ConnectionManager', () => {
 
   describe('Separation of Concerns', () => {
     beforeEach(async () => {
-      await connectionManager.initialize();
+      await connectionManager.initialize(stateManager);
     });
 
     test('ConnectionManager delegates tab actions to StateManager', async () => {
