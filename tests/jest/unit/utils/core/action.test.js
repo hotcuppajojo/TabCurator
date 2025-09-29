@@ -40,10 +40,22 @@ describe('action module - TabAPI and extendSchema', () => {
   });
 
   test('TabAPI.create surfaces a structured error from underlying API as validation-style message', async () => {
+    // Mock console.error to suppress and verify error logging
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+    
     // Simulate browser API throwing an object with details the action.js catch will format
     browser.tabs.create.mockRejectedValue({ index: 0, expectedType: 'object', receivedArg: 'string' });
     await expect(TabAPI.create({ url: 'https://example.com' }))
       .rejects.toThrow(/Validation failed for create: Argument at index 0 is invalid/);
+    
+    // Verify console.error was called with expected message
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Error in create:',
+      { index: 0, expectedType: 'object', receivedArg: 'string' }
+    );
+    
+    // Clean up the spy
+    consoleErrorSpy.mockRestore();
   });
 
   test('Nested action structure exists and is accessible', () => {

@@ -6,7 +6,11 @@ import path from 'path';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { getExtensionId } from '../../utils/tabManager.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * Sets up a persistent browser context with the extension loaded.

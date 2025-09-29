@@ -1,8 +1,8 @@
 
 // tests/playwright/tagUtils.integration.test.js
 
-const { test, expect } = require('@playwright/test');
-const { injectBrowserMock } = require('./mocks/browserMock');
+import { test, expect } from '@playwright/test';
+import { injectBrowserMock } from '../mocks/browserMock.js';
 
 test.describe('Tag Utilities Integration Tests', () => {
   test.beforeEach(async ({ page }) => {

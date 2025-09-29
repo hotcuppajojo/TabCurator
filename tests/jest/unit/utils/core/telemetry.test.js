@@ -69,9 +69,21 @@ describe('telemetry utils', () => {
   });
   
   test('flushTelemetry handles storage errors', async () => {
+    // Mock console.error to suppress and verify error logging
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+    
     mockStorage.get.mockRejectedValueOnce(new Error('storage failure'));
     // enqueue and attempt to flush; error should be caught and not throw
     recordTelemetry(TELEMETRY_EVENTS.TAB_CREATED, { tabId: 2 });
     await expect(flushTelemetry()).resolves.toBeUndefined();
+    
+    // Verify console.error was called with expected message
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      '[Telemetry] Failed to persist events:',
+      expect.any(Error)
+    );
+    
+    // Clean up the spy
+    consoleErrorSpy.mockRestore();
   });
 });

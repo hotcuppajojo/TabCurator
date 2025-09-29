@@ -53,6 +53,9 @@ describe('connection module', () => {
 
 describe('connection module - error handling', () => {
   test('sendMessageToBackground handles runtime errors', async () => {
+    // Mock console.error to suppress and verify error logging
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+    
     // Setup Chrome runtime to throw an error with the expected message
     global.chrome = {
       runtime: {
@@ -65,12 +68,20 @@ describe('connection module - error handling', () => {
     // Test error handling
     await expect(sendMessageToBackground('TEST_ACTION', { data: 123 }))
       .rejects
-      .toThrow(); // Just check that it throws, don't check the specific message
+      .toThrow('Failed to send message to background');
     
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
       action: 'TEST_ACTION', 
       payload: { data: 123 }
     });
+    
+    // Verify console.error was called with expected message
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to send message to background: Failed to send message to background'
+    );
+    
+    // Clean up the spy
+    consoleErrorSpy.mockRestore();
   });
   
   test('broadcastMessage resolves gracefully when no implementation', async () => {

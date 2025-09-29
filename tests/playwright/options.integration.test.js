@@ -1,8 +1,8 @@
 // tests/playwright/options.integration.test.js
 
-const { test, expect } = require('@playwright/test');
-const { injectBrowserMock } = require('./mocks/browserMock');
-const { getExtensionId } = require('./setup'); // Ensure this utility fetches your extension ID
+import { test, expect } from '@playwright/test';
+import { injectBrowserMock } from './mocks/browserMock.js';
+import { setupBrowserContext } from './setup.js';
 
 test.describe('Options page integration tests', () => {
   let browserContext;
