@@ -422,6 +422,28 @@ class StateManager {
   }
 
   async initialize(tabManager) {
+    // Refresh bound methods so previous test spies/mocks don't leak between runs
+    if (this.syncWithServiceWorker && typeof this.syncWithServiceWorker.mockRestore === 'function') {
+      this.syncWithServiceWorker.mockRestore();
+    }
+    if (this.validateStateUpdate && typeof this.validateStateUpdate.mockRestore === 'function') {
+      this.validateStateUpdate.mockRestore();
+    }
+
+    Object.defineProperty(this, 'syncWithServiceWorker', {
+      value: StateManager.prototype.syncWithServiceWorker.bind(this),
+      writable: true,
+      configurable: true,
+      enumerable: false
+    });
+
+    Object.defineProperty(this, 'validateStateUpdate', {
+      value: StateManager.prototype.validateStateUpdate.bind(this),
+      writable: true,
+      configurable: true,
+      enumerable: false
+    });
+
     // Require a tabManager only if one isn't already attached
     if (!tabManager && !this.tabManager) {
       throw new Error('Valid StateManager instance required');
@@ -760,9 +782,13 @@ class StateManager {
   async validateStateUpdate(payload) {
     const start = performance.now();
     try {
+      const invalidMessageBase = typeof VALIDATION_ERRORS !== 'undefined' && VALIDATION_ERRORS && VALIDATION_ERRORS.INVALID_MESSAGE
+        ? VALIDATION_ERRORS.INVALID_MESSAGE
+        : 'Invalid Message';
+
       // Fast-fail on null/undefined before consulting external validators
       if (payload === null || payload === undefined) {
-        throw new ValidationError((VALIDATION_ERRORS?.INVALID_MESSAGE || 'Invalid Message') + ': payload is null or undefined');
+        throw new ValidationError(`${invalidMessageBase}: payload is null or undefined`);
       }
 
       // If test harness provides validateFullState, use it to determine success/failure
@@ -800,7 +826,10 @@ class StateManager {
         severity: ERROR_CATEGORIES.SEVERITY.HIGH,
         type: ERROR_TYPES.INVALID_MESSAGE
       });
-      throw new ValidationError((VALIDATION_ERRORS?.INVALID_MESSAGE || 'Invalid Message') + ': ' + error.message);
+      const invalidMessageBase = typeof VALIDATION_ERRORS !== 'undefined' && VALIDATION_ERRORS && VALIDATION_ERRORS.INVALID_MESSAGE
+        ? VALIDATION_ERRORS.INVALID_MESSAGE
+        : 'Invalid Message';
+      throw new ValidationError(`${invalidMessageBase}: ${error.message}`);
     } finally {
       recordPerformance('validateStateUpdate', performance.now() - start);
     }

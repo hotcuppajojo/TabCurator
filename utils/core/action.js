@@ -100,6 +100,7 @@ export const ACTION = Object.freeze({
     RECOVER: 'STATE_RECOVER',
     RESET: 'STATE_RESET',
     SYNC: 'STATE_SYNC',
+    CLEANUP: 'STATE_CLEANUP',
   },
 
   // Actions for tab management

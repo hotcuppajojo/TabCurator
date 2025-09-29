@@ -26,6 +26,9 @@ export default {
     openOptionsPage: jest.fn().mockResolvedValue(undefined),
     sendMessage: jest.fn().mockResolvedValue({}),
     onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
+    onConnect: { addListener: jest.fn(), removeListener: jest.fn() },
+    onInstalled: { addListener: jest.fn(), removeListener: jest.fn() },
+    onSuspend: { addListener: jest.fn(), removeListener: jest.fn() },
     connect: jest.fn(() => ({ connectionId: 'conn1', postMessage: jest.fn(), onMessage: { addListener: jest.fn() } }))
   },
   storage: {
