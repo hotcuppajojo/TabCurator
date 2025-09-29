@@ -21,6 +21,9 @@ safari-extension.zip
 
 # Icon files
 Icon?
+Icon
+Icon[
+]
 ._*
 
 # Thumbnails
@@ -37,6 +40,9 @@ Thumbs.db
 # Coverage reports
 coverage/
 *.lcov
+
+# Chrome extension private key
+key.pem
 
 # Generated files and backups
 *.bak
@@ -68,3 +74,5 @@ test-results/
 
 # Temporary files
 .tmp/
+.tmp-pw-profile*/
+pchrome-*

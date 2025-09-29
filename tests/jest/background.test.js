@@ -1,24 +1,28 @@
+// tests/jest/background.test.js
 /**
- * Background Service Worker Unit Tests
- * 
- * Tests the orchestration layer that coordinates:
- * - TabManager initialization (browser API delegation)  
- * - StateManager initialization (Redux coordination)
- * - ConnectionManager initial            // Verify StateManager cleanup dispatch was called during the interval execution
-      expect(stateManager.dispatch).toHaveBeenCalled();on (message routing)
+ * @file Unit tests for the Background service worker orchestration
+ * @description The background worker wires together several managers (TabManager,
+ * StateManager, ConnectionManager) and registers browser event listeners and periodic
+ * maintenance tasks. Tests in this file assert the orchestration contracts and
+ * resilience behaviours (ordering, idempotence, graceful error handling, and cleanup)
+ *
+ * Rationale: the background layer coordinates many moving parts; small changes in
+ * registration order, error propagation, or listener wiring can cause silent runtime
+ * failures. These tests exercise the integration points while keeping implementations
+ * mocked to maintain fast, deterministic unit tests
  */
 
 import browser from 'webextension-polyfill';
 
 // Mock dependencies with proper factories to avoid hoisting issues
-jest.mock('../../../utils/tabManager.js', () => ({
+jest.mock('../../utils/tabManager.js', () => ({
   tabManager: {
     initialize: jest.fn().mockResolvedValue(undefined),
     cleanup: jest.fn().mockResolvedValue(undefined)
   }
 }));
 
-jest.mock('../../../utils/stateManager.js', () => ({
+jest.mock('../../utils/stateManager.js', () => ({
   __esModule: true,
   default: {
     initialize: jest.fn().mockResolvedValue(undefined),
@@ -29,7 +33,7 @@ jest.mock('../../../utils/stateManager.js', () => ({
   }
 }));
 
-jest.mock('../../../utils/connectionManager.js', () => ({
+jest.mock('../../utils/connectionManager.js', () => ({
   __esModule: true,
   default: {
     initialize: jest.fn().mockResolvedValue(undefined),
@@ -38,7 +42,7 @@ jest.mock('../../../utils/connectionManager.js', () => ({
   }
 }));
 
-jest.mock('../../../utils/logger.js', () => ({
+jest.mock('../../utils/logger.js', () => ({
   logger: {
     info: jest.fn(),
     warn: jest.fn(),
@@ -47,7 +51,7 @@ jest.mock('../../../utils/logger.js', () => ({
   }
 }));
 
-jest.mock('../../../utils/core/bookmark.js', () => ({
+jest.mock('../../utils/core/bookmark.js', () => ({
   initializeBookmarkFolder: jest.fn().mockResolvedValue('folder123')
 }));
 
@@ -67,10 +71,10 @@ jest.mock('webextension-polyfill', () => ({
 }));
 
 // Import after mocks are set up
-import { background } from '../../../background/background.js';
-import { tabManager } from '../../../utils/tabManager.js';
-import stateManager from '../../../utils/stateManager.js';
-import connectionManager from '../../../utils/connectionManager.js';
+import { background } from '../../background/background.js';
+import { tabManager } from '../../utils/tabManager.js';
+import stateManager from '../../utils/stateManager.js';
+import connectionManager from '../../utils/connectionManager.js';
 
 describe('Background Service Worker Orchestration', () => {
   // Mock global functions
@@ -112,6 +116,12 @@ describe('Background Service Worker Orchestration', () => {
   });
 
   describe('Initialization Orchestration', () => {
+    /**
+     * @description Initialization must occur in a predictable dependency order so that
+     * managers can receive the instances they depend on. We assert TabManager first so
+     * StateManager can be initialized with it, and ConnectionManager initializes last with
+     * access to the stateful store
+     */
     test('should initialize managers in correct dependency order', async () => {
       await background.initBackground();
 
@@ -121,6 +131,11 @@ describe('Background Service Worker Orchestration', () => {
       expect(connectionManager.initialize).toHaveBeenCalledWith(stateManager);
     });
 
+    /**
+     * @description Failures during initialization should surface clearly rather than leave
+     * the service in a half-initialized state. This test simulates a StateManager failure and
+     * expects the error to propagate so callers can detect and react to startup failures
+     */
     test('should handle initialization failures gracefully', async () => {
       const initError = new Error('StateManager initialization failed');
       stateManager.initialize.mockRejectedValueOnce(initError);
@@ -128,7 +143,12 @@ describe('Background Service Worker Orchestration', () => {
       await expect(background.initBackground()).rejects.toThrow('StateManager initialization failed');
     });
 
-    test('should prevent double initialization', async () => {
+  /**
+   * @description The background worker should be idempotent with regards to initialization.
+   * Re-entrant calls must be no-ops to avoid duplicated listeners, timers, or double
+   * resource allocation
+   */
+  test('should prevent double initialization', async () => {
       // First initialization
       await background.initBackground();
       
@@ -141,6 +161,10 @@ describe('Background Service Worker Orchestration', () => {
       expect(connectionManager.initialize).toHaveBeenCalledTimes(1);
     });
 
+    /**
+     * @description Exposes an internal state accessor for tests/health checks; we assert it
+     * accurately reflects the initialization lifecycle to help diagnostics in tests
+     */
     test('should return initialization state correctly', async () => {
       expect(background._getInitializationState()).toBe(false);
       
@@ -155,7 +179,12 @@ describe('Background Service Worker Orchestration', () => {
       await background.initBackground();
     });
 
-    test('should register all required browser event listeners', () => {
+  /**
+   * @description Verifies we register the full set of browser event listeners the app
+   * expects. Missing listeners lead to silent feature regressions (e.g., missing tab
+   * notifications), so this test acts as a canary for listener wiring
+   */
+  test('should register all required browser event listeners', () => {
       // Verify tab event listeners
       expect(browser.tabs.onCreated.addListener).toHaveBeenCalledWith(expect.any(Function));
       expect(browser.tabs.onRemoved.addListener).toHaveBeenCalledWith(expect.any(Function));
@@ -168,7 +197,12 @@ describe('Background Service Worker Orchestration', () => {
       expect(browser.runtime.onSuspend.addListener).toHaveBeenCalledWith(expect.any(Function));
     });
 
-    test('should dispatch tab events to StateManager', () => {
+  /**
+   * @description Ensures event callbacks route to `stateManager.dispatch`. The state
+   * manager is the single source of truth; dispatch guarantees consistent state updates
+   * regardless of the browser event shape
+   */
+  test('should dispatch tab events to StateManager', () => {
       // Get the registered tab created listener
       const tabCreatedListener = browser.tabs.onCreated.addListener.mock.calls[0][0];
       
@@ -178,7 +212,11 @@ describe('Background Service Worker Orchestration', () => {
       expect(stateManager.dispatch).toHaveBeenCalled();
     });
 
-    test('should dispatch tab removal events to StateManager', () => {
+  /**
+   * @description Removal events must also route to state manager so eviction and cleanup
+   * policies can run. We test listener wiring and argument forwarding
+   */
+  test('should dispatch tab removal events to StateManager', () => {
       const tabRemovedListener = browser.tabs.onRemoved.addListener.mock.calls[0][0];
       
       const tabId = 123;
@@ -188,7 +226,11 @@ describe('Background Service Worker Orchestration', () => {
       expect(stateManager.dispatch).toHaveBeenCalled();
     });
 
-    test('should dispatch tab update events to StateManager', () => {
+  /**
+   * @description Updates are frequent and must be correctly forwarded so the store reflects
+   * the current tab state; this prevents stale UI and incorrect heuristics
+   */
+  test('should dispatch tab update events to StateManager', () => {
       const tabUpdatedListener = browser.tabs.onUpdated.addListener.mock.calls[0][0];
       
       const tabId = 123;
@@ -200,7 +242,12 @@ describe('Background Service Worker Orchestration', () => {
       expect(stateManager.dispatch).toHaveBeenCalled();
     });
 
-    test('should handle runtime messages through ConnectionManager', async () => {
+  /**
+   * @description Background message routing delegates to ConnectionManager. We assert the
+   * listener returns `true` (async handler) and that the manager receives the message so
+   * message handling remains testable and decoupled
+   */
+  test('should handle runtime messages through ConnectionManager', async () => {
       const messageListener = browser.runtime.onMessage.addListener.mock.calls[0][0];
       
       const message = { type: 'TEST_MESSAGE', payload: {} };
@@ -217,6 +264,10 @@ describe('Background Service Worker Orchestration', () => {
       expect(connectionManager.handleMessage).toHaveBeenCalledWith(message, sender);
     });
 
+    /**
+     * @description Installation events are used to seed state (first-run). We verify the
+     * installed listener dispatches expected actions so migrations and onboarding run
+     */
     test('should handle extension installation events', () => {
       const installedListener = browser.runtime.onInstalled.addListener.mock.calls[0][0];
       
@@ -232,14 +283,22 @@ describe('Background Service Worker Orchestration', () => {
       await background.initBackground();
     });
 
-    test('should setup cleanup interval task', () => {
+  /**
+   * @description The background worker configures periodic tasks (cleanup, telemetry). We
+   * assert an interval is scheduled so maintenance runs without user interaction
+   */
+  test('should setup cleanup interval task', () => {
       expect(global.setInterval).toHaveBeenCalledWith(
         expect.any(Function),
         expect.any(Number)
       );
     });
 
-    test('should execute periodic cleanup through StateManager', () => {
+  /**
+   * @description The scheduled task should use `requestIdleCallback` to perform work during
+   * idle time and then dispatch cleanup actions. This pattern reduces main-thread impact
+   */
+  test('should execute periodic cleanup through StateManager', () => {
       // Get the interval callback
       const intervalCallback = global.setInterval.mock.calls[0][0];
       
@@ -256,6 +315,10 @@ describe('Background Service Worker Orchestration', () => {
       expect(stateManager.dispatch).toHaveBeenCalled();
     });
 
+    /**
+     * @description Periodic task scheduling is an observable side-effect; we test the call
+     * to `setInterval` to ensure the telemetry/cleanup cadence remains configured
+     */
     test('should log periodic tasks setup', () => {
       // Verify periodic tasks were configured
       expect(global.setInterval).toHaveBeenCalled();
@@ -267,6 +330,10 @@ describe('Background Service Worker Orchestration', () => {
       await background.initBackground();
     });
 
+    /**
+     * @description Cleanup must remove all registered listeners to avoid leaks and duplicated
+     * handlers on reload. This test asserts each listener removal call is invoked
+     */
     test('should cleanup all registered listeners', async () => {
       await background._cleanup();
       
@@ -280,6 +347,11 @@ describe('Background Service Worker Orchestration', () => {
       expect(browser.runtime.onSuspend.removeListener).toHaveBeenCalled();
     });
 
+    /**
+     * @description Manager cleanup should run in a safe order. ConnectionManager manages
+     * live connections and should be cleaned up before the store is torn down. We assert the
+     * cleanup path is invoked for the component managing live resources
+     */
     test('should cleanup managers in reverse order', async () => {
       await background._cleanup();
       
@@ -287,12 +359,21 @@ describe('Background Service Worker Orchestration', () => {
       expect(connectionManager.cleanup).toHaveBeenCalledTimes(1);
     });
 
+    /**
+     * @description All scheduled intervals must be cleared during cleanup to prevent background
+     * tasks from running after unload or tests. This test ensures intervals are cleared
+     */
     test('should clear all intervals during cleanup', async () => {
       await background._cleanup();
       
       expect(global.clearInterval).toHaveBeenCalled();
     });
 
+    /**
+     * @description Cleanup steps can fail; background should catch and log cleanup errors so
+     * the rest of the teardown continues. This test injects a failure to ensure no exception
+     * bubbles out of the cleanup routine
+     */
     test('should handle cleanup errors gracefully', async () => {
       const cleanupError = new Error('Cleanup failed');
       connectionManager.cleanup.mockRejectedValueOnce(cleanupError);
@@ -303,6 +384,11 @@ describe('Background Service Worker Orchestration', () => {
       // Even with errors, the function should complete
     });
 
+    /**
+     * @description The cleanup process should be observable via logs for debugging and
+     * operational visibility. We assert cleanup was at least invoked on the manager to ensure
+     * the orchestration ran
+     */
     test('should log cleanup process', async () => {
       await background._cleanup();
       
@@ -316,6 +402,11 @@ describe('Background Service Worker Orchestration', () => {
       await background.initBackground();
     });
 
+    /**
+     * @description The runtime `onSuspend` event should trigger a cleanup to allow the
+     * extension to release resources on suspend. We assert the suspend listener is registered
+     * and callable
+     */
     test('should trigger cleanup on browser suspension', () => {
       const suspendListener = browser.runtime.onSuspend.addListener.mock.calls[0][0];
       
@@ -327,6 +418,10 @@ describe('Background Service Worker Orchestration', () => {
   });
 
   describe('Test Helper Methods', () => {
+    /**
+     * @description Helper methods are exposed for test hygiene. `_resetForTest` should bring
+     * the background into a known initial state without triggering initialization side-effects
+     */
     test('should reset state for testing', () => {
       // Initialize first
       expect(background._getInitializationState()).toBe(false);

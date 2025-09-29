@@ -1,34 +1,17 @@
-// jest.setup.js - Make it compatible with both ESM and CommonJS
+// tests/jest/setup/jest.setup.js
+/**
+ * @file Global test setup for Jest
+ * @rationale Provide minimal, deterministic browser-like globals so unit tests
+ * run consistently without a real browser environment. This reduces CI flakiness
+ * and keeps test intent focused on module contracts rather than platform behavior
+ */
+
 import '@testing-library/jest-dom';
 
-// Use Jest's built-in manual mocks for browser APIs
-jest.mock('webextension-polyfill', () => ({
-  storage: {
-    local: {
-      get: jest.fn().mockResolvedValue({}),
-      set: jest.fn().mockResolvedValue({})
-    }
-  },
-  runtime: {
-    connect: jest.fn(),
-    sendMessage: jest.fn(),
-    onMessage: {
-      addListener: jest.fn()
-    }
-  },
-  tabs: {
-    query: jest.fn().mockResolvedValue([]),
-    get: jest.fn(),
-    create: jest.fn(),
-    update: jest.fn()
-  },
-  bookmarks: {
-    search: jest.fn().mockResolvedValue([]),
-    create: jest.fn()
-  }
-}), { virtual: true });
-
-// Storage estimate mock
+/**
+ * @rationale Some codepaths query navigator.storage.estimate for quotas
+ * Mock a predictable estimate so storage-dependent logic can be exercised reliably
+ */
 global.navigator = {
   storage: {
     estimate: jest.fn().mockResolvedValue({
@@ -42,7 +25,11 @@ global.navigator = {
   }
 };
 
-// Global polyfills for browser APIs
+/**
+ * @rationale Many modules interact with chrome or browser globals. Provide a
+ * compact polyfill that exposes the API surface used in tests. Keep implementations
+ * minimal and promise-based so async flows can be asserted deterministically
+ */
 global.chrome = global.chrome || {
   runtime: {
     connect: jest.fn(),
@@ -68,27 +55,46 @@ global.chrome = global.chrome || {
   }
 };
 
+/**
+ * @rationale Expose the same surface under both global.browser and global.chrome
+ * Some modules import webextension-polyfill while others rely on chrome. Keep them aligned
+ */
 global.browser = global.chrome;
 
-// Mock performance API
+/**
+ * @rationale Performance.now is used for timing and metrics tests. Mock with a stable wrapper
+ * so tests can assert timing behavior without relying on high-resolution timers
+ */
 global.performance = global.performance || {
   now: jest.fn(() => Date.now())
 };
 
-// Mock requestIdleCallback
+/**
+ * @rationale requestIdleCallback is not available in node. Provide a thin shim
+ * that schedules callbacks quickly so idle-based paths can be exercised in unit tests
+ */
 global.requestIdleCallback = global.requestIdleCallback || function(cb) {
   return setTimeout(cb, 1);
 };
 
+/**
+ * @rationale Provide a matching cancelIdleCallback shim for completeness
+ */
 global.cancelIdleCallback = global.cancelIdleCallback || function(id) {
   clearTimeout(id);
 };
 
-// Setup global Jest mocks
+/**
+ * @rationale Expose jest and fetch globally to simplify test helpers that assume their presence
+ * fetch is a noop by default and can be mocked per-test when needed
+ */
 global.jest = jest;
 global.fetch = jest.fn();
 
-// Setup localStorage mock
+/**
+ * @rationale localStorage is used by some modules. Provide a simple spy based mock
+ * Tests that depend on persistence should mock these methods explicitly when verifying behavior
+ */
 global.localStorage = {
   getItem: jest.fn(),
   setItem: jest.fn(),
@@ -96,7 +102,10 @@ global.localStorage = {
   clear: jest.fn()
 };
 
-// Mock logger
+/**
+ * @rationale Replace the real logger with a no-op spy so tests can assert logging
+ * without producing noisy output. The mock preserves method names used across the codebase
+ */
 jest.mock('../../../utils/logger.js', () => ({
   logger: {
     info: jest.fn(),
@@ -106,18 +115,3 @@ jest.mock('../../../utils/logger.js', () => ({
     critical: jest.fn()
   }
 }));
-
-const Module = require('module');
-const originalLoad = Module._load;
-
-Module._load = function patchedBabelRuntime(request, parent, isMain) {
-  if (request.startsWith('@babel/runtime-corejs3/')) {
-    const altRequest = request.replace('@babel/runtime-corejs3/', '@babel/runtime/');
-    try {
-      return originalLoad.call(this, altRequest, parent, isMain);
-    } catch (err) {
-      // fall through and retry with original request
-    }
-  }
-  return originalLoad.call(this, request, parent, isMain);
-};

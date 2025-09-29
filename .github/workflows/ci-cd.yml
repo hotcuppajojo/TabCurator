@@ -17,18 +17,23 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        browser: [chrome, firefox, safari]
+        browser: [chrome]
+        node-version: [18]
+        # TODO: Add firefox and safari when browser configs are created
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
+          node-version: ${{ matrix.node-version }}
+          cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          npm install
+          npm ls
 
       - name: Run tests
         run: npm test
@@ -39,7 +44,7 @@ jobs:
 
       - name: Upload Build Artifacts
         if: success()
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: tabcurator-${{ matrix.browser }}-build
           path: build/${{ matrix.browser }}/
@@ -49,19 +54,30 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        browser: [chrome, firefox, safari]
+        browser: [chrome]
+        node-version: [18]
+        # TODO: Add firefox and safari when browser configs are created
     if: >
-      (github.ref == 'refs/heads/main') ||
+      (github.ref == 'refs/heads/develop') ||
       startsWith(github.ref, 'refs/heads/chrome-release') ||
       startsWith(github.ref, 'refs/heads/firefox-release') ||
       startsWith(github.ref, 'refs/heads/safari-release') ||
       startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
 
       - name: Download Build Artifacts
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: tabcurator-${{ matrix.browser }}-build
           path: build/${{ matrix.browser }}/
@@ -75,5 +91,3 @@ jobs:
           CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
           CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
           CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
-          FIREFOX_API_KEY: ${{ secrets.FIREFOX_API_KEY }}
-          SAFARI_API_KEY: ${{ secrets.SAFARI_API_KEY }}

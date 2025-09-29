@@ -659,14 +659,14 @@ class StateManager {
     if (message.action === ACTION.SESSION.SAVE) {
       recordTelemetry(TELEMETRY_EVENTS.SESSION_SAVED, { name: message.payload?.name });
     }
-    // ensure storage permission before reading/writing sessions
-    if (browser.permissions && !await browser.permissions.contains({ permissions: [PERMISSIONS.STORAGE] })) {
-      await browser.permissions.request({ permissions: [PERMISSIONS.STORAGE] });
-    }
 
     // Remove validation that's causing issues - sessions don't need strict validation
     const { action, payload } = message;
     try {
+      // ensure storage permission before reading/writing sessions
+      if (browser.permissions && !await browser.permissions.contains({ permissions: [PERMISSIONS.STORAGE] })) {
+        await browser.permissions.request({ permissions: [PERMISSIONS.STORAGE] });
+      }
       switch (action) {
         case ACTION.SESSION.SAVE:
           // Optionally bookmark all tabs in the session

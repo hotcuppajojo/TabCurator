@@ -1,74 +1,131 @@
-// jest.config.js
+/**
+ * @file Jest configuration for TabCurator tests
+ * @rationale Keep a single, explicit Jest configuration so local and CI runs
+ * behave identically. This file documents why each option exists rather
+ * than repeating the mechanics of what Jest does
+ */
 
 /** @type {import('@jest/types').Config.InitialOptions} */
 module.exports = {
-  // Setup testing environment
+  /**
+   * @rationale Use jsdom to approximate browser-like DOM APIs required by
+   * some modules and UI tests. This enables DOM assertions while keeping
+   * tests runnable in Node-based CI environments
+   */
   testEnvironment: 'jsdom',
 
-  // Define single root directory for tests
+  /**
+   * @rationale Restrict the test root to the `tests` folder. This keeps
+   * discovery predictable and avoids accidentally running unrelated files
+   */
   roots: ['<rootDir>/tests'],
 
-  // Ensure that the setupFilesAfterEnv is correctly pointing to the simplified setup file
+  /**
+   * @rationale Centralize global test setup in a single file. The setup file
+   * provides deterministic globals and mocks that are safe to reuse across
+   * many suites. Keep the list minimal to reduce side effects
+   */
   setupFilesAfterEnv: [
-    '<rootDir>/tests/jest/setup/jest.setup.js' // Ensure only jest.setup.js is referenced
+    '<rootDir>/tests/jest/setup/jest.setup.js'
   ],
 
-  // Define how Jest should transform files
+  /**
+   * @rationale Use Babel to transform source and test files. The transform
+   * preserves project-level Babel configuration by pointing to the repo
+   * config and using upward root discovery
+   */
   transform: {
-    '^.+\\.[tj]sx?$': ['babel-jest', { 
+    '^.+\\.[tj]sx?$': ['babel-jest', {
       configFile: './babel.config.cjs',
       rootMode: 'upward'
     }]
   },
 
-  // Exclude Playwright tests from Jest runs
+  /**
+   * @rationale Exclude Playwright test directories and node_modules from
+   * Jest runs to avoid accidental cross-execution of integration tests
+   */
   testPathIgnorePatterns: [
     '/node_modules/',
     '/tests/playwright/'
   ],
 
-  // Update test patterns to be more specific
+  /**
+   * @rationale Exclude test infrastructure and build outputs from coverage
+   * Reports should reflect production code quality not test helpers or bundles
+   */
+  coveragePathIgnorePatterns: [
+    '/tests/',
+    '/build/',
+    '/dist/',
+    '/coverage/',
+    'tests/jest/mocks/',
+    'utils/core/index.js'
+  ],
+
+  /**
+   * @rationale Define which source files should be considered for coverage
+   * Keep the list focused on runtime code while excluding config and tests
+   */
+  collectCoverageFrom: [
+    'utils/**/*.js',
+    'background/**/*.js',
+    'popup/**/*.jsx',
+    'options/**/*.jsx',
+    '!**/*.config.js',
+    '!**/node_modules/**',
+    '!**/tests/**'
+  ],
+
+  /**
+   * @rationale Match test files under the canonical test folders. This
+   * prevents accidental matching of unrelated test helpers in other paths
+   */
   testMatch: [
+    '**/tests/jest/*.test.js',
     '**/tests/jest/**/*.test.js',
     '**/tests/react/**/*.test.js'
   ],
 
-  // Module name mapping for imports
+  /**
+   * @rationale Map assets and environment-specific modules to lightweight
+   * mocks so tests remain fast and deterministic. The webextension-polyfill
+   * mapping ensures code importing the polyfill receives the project mock
+   */
   moduleNameMapper: {
     '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
     '^webextension-polyfill$': '<rootDir>/tests/jest/mocks/browserMock.js',
-    
-    // Fix the constants.js mapping
-    '^../../utils/constants.js$': '<rootDir>/utils/core/index.js',
-    '^../../../utils/constants.js$': '<rootDir>/utils/core/index.js',
-    
-    // Add direct mappings for core modules to avoid path traversal issues
-    '^../../../../utils/core/(.*)$': '<rootDir>/utils/core/$1',
     '^../../../utils/core/(.*)$': '<rootDir>/utils/core/$1',
     '^@/(.*)$': '<rootDir>/$1',
-    '^@test/(.*)$': '<rootDir>/tests/$1',
-
-    // Fix babel runtime mappings with more specific patterns
-    '@babel/runtime-corejs3/core-js-stable/(.*)': '<rootDir>/node_modules/core-js/stable/$1',
-    '@babel/runtime-corejs3/helpers/(.*)': '<rootDir>/node_modules/@babel/runtime/helpers/$1',
-
-    // General fallback mapping for any other @babel/runtime-corejs3 imports
-    '^@babel/runtime-corejs3/(.*)$': '<rootDir>/node_modules/@babel/runtime/$1'
+    '^@test/(.*)$': '<rootDir>/tests/$1'
   },
 
-  // Add transform ignore patterns for ESM and async/await
+  /**
+   * @rationale Allow specific ESM packages through transformation so modern
+   * dependencies that ship ESM or use newer syntax are handled correctly
+   */
   transformIgnorePatterns: [
     'node_modules/(?!(webextension-polyfill|@reduxjs/toolkit|reselect)/)'
   ],
 
-  // Add verbose output for debugging
+  /**
+   * @rationale Enable verbose output by default to aid debugging during
+   * local development and CI when diagnosing test discovery issues
+   */
   verbose: true,
 
-  // Add Jest DOM configuration
+  /**
+   * @rationale Provide node-specific export condition options for modules
+   * that rely on conditional exports. This reduces module resolution errors
+   * when running tests in Node environments
+   */
   testEnvironmentOptions: {
     customExportConditions: ['node', 'node-addons']
   },
 
-  // Add module file extensions for module resolution
+  /**
+   * @rationale Explicit module file extensions improve resolution and make
+   * imports predictable across tooling and editors
+   */
   moduleFileExtensions: ['js', 'jsx', 'json', 'node']
 };

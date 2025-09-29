@@ -1,11 +1,22 @@
-// tests/jest/unit/tabManager.test.js
+// tests/jest/tabManager.test.js
+/**
+ * @description TabManager unit tests. These tests document why TabManager delegates
+ * responsibilities to StateManager and browser APIs rather than restating implementation
+ * details. The goal is to lock down delegation, validation, and recovery contracts so
+ * refactors that change responsibilities fail loudly
+ */
+
 import { jest } from '@jest/globals';
-import { tabManager, TabManager } from '../../../utils/tabManager.js';
-import { ValidationError, APIError, TabLimitExceededError } from '../../../utils/core/error.js';
-import { STATE } from '../../../utils/core/state.js';
+import { tabManager, TabManager } from '../../utils/tabManager.js';
+import { ValidationError, APIError, TabLimitExceededError } from '../../utils/core/error.js';
+import { STATE } from '../../utils/core/state.js';
 
 // Mock dependencies
-jest.mock('../../../utils/stateManager', () => {
+/**
+ * @description Provide a minimal StateManager mock to keep TabManager initialization
+ * deterministic and to focus tests on TabManager behaviour rather than state plumbing
+ */
+jest.mock('../../utils/stateManager', () => {
   const mockDispatch = jest.fn();
   const mockGetState = jest.fn(() => ({
     tabManagement: {
@@ -46,6 +57,11 @@ jest.mock('../../../utils/stateManager', () => {
   };
 });
 
+/**
+ * @description Mock the browser surface to make tab operations deterministic in tests
+ * This allows us to verify how TabManager reacts to success and failure responses
+ * without relying on a real browser environment
+ */
 jest.mock('webextension-polyfill', () => ({
   __esModule: true,
   default: {
@@ -69,7 +85,11 @@ jest.mock('webextension-polyfill', () => ({
   }
 }));
 
-jest.mock('../../../utils/logger', () => ({
+/**
+ * @description Logger is mocked so tests can assert that important lifecycle events
+ * and error paths emit diagnostics without printing to CI logs
+ */
+jest.mock('../../utils/logger', () => ({
   __esModule: true,
   logger: {
     info: jest.fn(),
@@ -79,7 +99,11 @@ jest.mock('../../../utils/logger', () => ({
   }
 }));
 
-jest.mock('../../../utils/core/bookmark.js', () => ({
+/**
+ * @description Bookmark helpers are mocked to verify coordination between tagging
+ * and bookmarking logic while avoiding real bookmarks creation in the test env
+ */
+jest.mock('../../utils/core/bookmark.js', () => ({
   __esModule: true,
   getOrCreateBookmarkFolder: jest.fn(() => Promise.resolve('folder123')),
   addBookmark: jest.fn(bookmark => Promise.resolve({ id: 'bm123', ...bookmark })),
@@ -88,7 +112,11 @@ jest.mock('../../../utils/core/bookmark.js', () => ({
   initializeBookmarkFolder: jest.fn(() => Promise.resolve('folder123'))
 }));
 
-jest.mock('../../../utils/core/telemetry.js', () => ({
+/**
+ * @description Telemetry is mocked to confirm that TabManager emits telemetry
+ * events for key operations without depending on telemetry backend availability
+ */
+jest.mock('../../utils/core/telemetry.js', () => ({
   __esModule: true,
   recordTelemetry: jest.fn(),
   recordPerformance: jest.fn(),
@@ -103,12 +131,17 @@ jest.mock('../../../utils/core/telemetry.js', () => ({
 
 // Import browser, logger and dependencies after mocks are set up
 import browser from 'webextension-polyfill';
-import { logger } from '../../../utils/logger.js';
-import stateManager from '../../../utils/stateManager.js';
-import { recordTelemetry, recordPerformance, TELEMETRY_EVENTS } from '../../../utils/core/telemetry.js';
-import { getOrCreateBookmarkFolder, addBookmark, removeBookmark, searchBookmarks } from '../../../utils/core/bookmark.js';
+import { logger } from '../../utils/logger.js';
+import stateManager from '../../utils/stateManager.js';
+import { recordTelemetry, recordPerformance, TELEMETRY_EVENTS } from '../../utils/core/telemetry.js';
+import { getOrCreateBookmarkFolder, addBookmark, removeBookmark, searchBookmarks } from '../../utils/core/bookmark.js';
 
 describe('TabManager', () => {
+  /**
+   * @description Top-level TabManager tests. These groupings focus on responsibilities
+   * such as initialization, tab lifecycle operations, tagging, and enforcement logic
+   * so that behavioural contracts remain explicit and testable
+   */
   let manager;
   
   beforeEach(() => {
@@ -129,6 +162,10 @@ describe('TabManager', () => {
   });
   
   describe('Initialization', () => {
+    /**
+     * @description Initialization must attach a StateManager and set internal flags
+     * so consumers can rely on manager.initialized instead of checking internals
+     */
     test('should initialize with valid stateManager', async () => {
       await manager.initialize(stateManager);
       
@@ -137,7 +174,11 @@ describe('TabManager', () => {
       expect(logger.info).toHaveBeenCalledWith('Tab manager initialized', expect.any(Object));
     });
     
-    test('should throw error when initializing without stateManager', async () => {
+  /**
+   * @description The manager requires a valid StateManager. This test ensures
+   * a helpful error is thrown rather than undefined behaviour when dependency is missing
+   */
+  test('should throw error when initializing without stateManager', async () => {
       await expect(manager.initialize()).rejects.toThrow('Valid StateManager instance required');
     });
   });
@@ -146,7 +187,10 @@ describe('TabManager', () => {
     beforeEach(async () => {
       await manager.initialize(stateManager);
     });
-    
+    /**
+     * @description Core tab operations are delegated to the browser API. Tests check
+     * that the manager forwards queries and returns the raw results for consumers
+     */
     test('should query tabs', async () => {
       const mockTabs = [{ id: 1 }, { id: 2 }];
       browser.tabs.query.mockResolvedValueOnce(mockTabs);
@@ -157,7 +201,11 @@ describe('TabManager', () => {
       expect(result).toEqual(mockTabs);
     });
     
-    test('should get a tab by ID', async () => {
+  /**
+   * @description getTab validates arguments before calling the browser API so
+   * invalid inputs fail fast and do not trigger expensive API calls
+   */
+  test('should get a tab by ID', async () => {
       const mockTab = { id: 42, url: 'https://test.com', title: 'Test Tab' };
       browser.tabs.get.mockResolvedValueOnce(mockTab);
       
@@ -167,17 +215,29 @@ describe('TabManager', () => {
       expect(result).toEqual(mockTab);
     });
     
-    test('should throw validation error for invalid tab ID', async () => {
+  /**
+   * @description Ensure argument validation prevents misuse of public APIs and
+   * preserves internal invariants across callers
+   */
+  test('should throw validation error for invalid tab ID', async () => {
       await expect(manager.getTab('invalid-id')).rejects.toThrow(ValidationError);
     });
     
-    test('should throw API error when browser.tabs.get fails', async () => {
+  /**
+   * @description Browser API failures must be wrapped into APIError so callers
+   * can distinguish network or platform errors from validation errors
+   */
+  test('should throw API error when browser.tabs.get fails', async () => {
       browser.tabs.get.mockRejectedValueOnce(new Error('API failure'));
       
       await expect(manager.getTab(1)).rejects.toThrow(APIError);
     });
     
-    test('should create a new tab', async () => {
+  /**
+   * @description Tab creation must emit telemetry and performance metrics so
+   * product metrics remain accurate while the manager continues to return the tab
+   */
+  test('should create a new tab', async () => {
       const createProps = { url: 'https://example.com' };
       const mockTab = { id: 123, url: 'https://example.com' };
       browser.tabs.create.mockResolvedValueOnce(mockTab);
@@ -193,7 +253,11 @@ describe('TabManager', () => {
       expect(recordPerformance).toHaveBeenCalled();
     });
     
-    test('should update a tab', async () => {
+  /**
+   * @description Updates must dispatch state changes after successful browser API calls
+   * so UI and reducers stay in sync with the actual tab state reported by the browser
+   */
+  test('should update a tab', async () => {
       const updateProps = { title: 'Updated Title' };
       const mockTab = { id: 1, title: 'Updated Title' };
       browser.tabs.update.mockResolvedValueOnce(mockTab);
@@ -205,7 +269,11 @@ describe('TabManager', () => {
       expect(result).toEqual(mockTab);
     });
     
-    test('should remove a tab', async () => {
+  /**
+   * @description Remove operations must both call the browser API and notify state
+   * so telemetry and UI can respond to destructive actions reliably
+   */
+  test('should remove a tab', async () => {
       await manager.removeTab(1);
       
       expect(browser.tabs.remove).toHaveBeenCalledWith(1);
@@ -216,7 +284,11 @@ describe('TabManager', () => {
       expect(stateManager.dispatch).toHaveBeenCalled();
     });
     
-    test('should discard a tab', async () => {
+  /**
+   * @description Discarding is conditional. Validate the manager checks tab attributes
+   * and only calls discard when appropriate to avoid disrupting active user sessions
+   */
+  test('should discard a tab', async () => {
       // Provide a full tab object (including url) so validateTab() passes
       const mockTab = { id: 1, url: 'https://example.com', active: false, pinned: false, audible: false, discarded: false };
       browser.tabs.get.mockResolvedValueOnce(mockTab);
@@ -229,7 +301,11 @@ describe('TabManager', () => {
       expect(result).toEqual({ success: true, tabId: 1 });
     });
     
-    test('should not discard active, pinned, or audible tabs', async () => {
+  /**
+   * @description Guard rails prevent discarding tabs that are active or important
+   * This reduces user disruption and improves the reliability of automatic suspension
+   */
+  test('should not discard active, pinned, or audible tabs', async () => {
       // Include url to satisfy validateTab
       const mockTab = { id: 1, url: 'https://example.com', active: true, pinned: false, audible: false, discarded: false };
       browser.tabs.get.mockResolvedValueOnce(mockTab);
@@ -246,7 +322,10 @@ describe('TabManager', () => {
     beforeEach(async () => {
       await manager.initialize(stateManager);
     });
-    
+    /**
+     * @description Tagging is a UX convenience that must update title and metadata
+     * Tests ensure tagging writes state and emits telemetry while preserving tab shape
+     */
     test('should tag a tab', async () => {
       const mockTab = { id: 1, title: 'Example Tab', url: 'https://example.com' };
       browser.tabs.get.mockResolvedValueOnce(mockTab);
@@ -271,7 +350,12 @@ describe('TabManager', () => {
       expect(result).toBe('[test-tag] Example Tab');
     });
     
-    test('should tag, bookmark and remove a tab', async () => {
+  /**
+   * @description Tagging combined with bookmarking and removal is an atomic flow
+   * The manager must coordinate across bookmark helpers and tab removal to avoid
+   * leaving inconsistent state when one step fails
+   */
+  test('should tag, bookmark and remove a tab', async () => {
       const mockTab = { id: 1, title: 'Example Tab', url: 'https://example.com' };
       browser.tabs.get.mockResolvedValueOnce(mockTab);
       browser.tabs.update.mockResolvedValueOnce({ id: 1, title: '[test-tag] Example Tab' });
@@ -301,7 +385,11 @@ describe('TabManager', () => {
       );
     });
     
-    test('should throw validation error for invalid tag', async () => {
+  /**
+   * @description Tag names are validated to avoid unsafe titles and to keep tagging
+   * machine-friendly for downstream tooling such as exports and searches
+   */
+  test('should throw validation error for invalid tag', async () => {
       await expect(manager.tagTab(1, 'invalid tag with spaces!')).rejects.toThrow();
     });
   });
@@ -310,7 +398,10 @@ describe('TabManager', () => {
     beforeEach(async () => {
       await manager.initialize(stateManager);
     });
-    
+    /**
+     * @description Tab management operations like finding the oldest tab are used
+     * by eviction policies. Tests ensure selection logic remains deterministic
+     */
     test('should find oldest tab', async () => {
       const tabs = [
         { id: 1, lastAccessed: 1000 },
@@ -336,7 +427,11 @@ describe('TabManager', () => {
       expect(result).toEqual(tabs[1]); // tab with id 2 is oldest
     });
     
-    test('should suspend inactive tabs', async () => {
+  /**
+   * @description Suspensions coordinate bookmarking, removal and telemetry. Tests
+   * verify the count and results are reported so UI and metrics remain accurate
+   */
+  test('should suspend inactive tabs', async () => {
       const inactiveTabs = [
         { id: 1, active: false, pinned: false, title: 'Tab 1', url: 'https://example1.com' },
         { id: 2, active: false, pinned: false, title: 'Tab 2', url: 'https://example2.com' }
@@ -362,7 +457,11 @@ describe('TabManager', () => {
       });
     });
     
-    test('should enforce tab limits', async () => {
+  /**
+   * @description EnforceTabLimits protects users from exceeding configured limits
+   * Tests assert that when limits are exceeded the manager surfaces a specific error
+   */
+  test('should enforce tab limits', async () => {
       const tabs = [
         { id: 1, lastAccessed: 1000 },
         { id: 2, lastAccessed: 500 }, // oldest
@@ -388,7 +487,11 @@ describe('TabManager', () => {
       await expect(manager.enforceTabLimits()).rejects.toThrow(TabLimitExceededError);
     });
     
-    test('should remove bookmarks for a tab URL', async () => {
+  /**
+   * @description Bookmark cleanup must discover and remove matching bookmarks so
+   * session deletions do not leave orphaned bookmarks behind
+   */
+  test('should remove bookmarks for a tab URL', async () => {
       const bookmarks = [
         { id: 'bm1', url: 'https://example.com' },
         { id: 'bm2', url: 'https://example.com' }
