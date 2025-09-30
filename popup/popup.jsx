@@ -244,7 +244,22 @@ const Popup = () => {
         payload: {}
       });
       
-      setSessions(response.sessions || []);
+      // Normalize sessions: allow either array of strings or array of objects
+      const raw = response.sessions || [];
+      const normalized = raw.map(item => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          // prefer 'name' or 'sessionName'
+          return {
+            name: item.name || item.sessionName || (item.title || undefined),
+            timestamp: item.timestamp || item.createdAt || null,
+            ...item
+          };
+        }
+        return String(item);
+      });
+
+      setSessions(normalized);
     } catch (error) {
       // Log full error so we can see returned objects (some handlers return {error:...})
       logger.error('Failed to load sessions:', error);
@@ -254,17 +269,19 @@ const Popup = () => {
     }
   };
 
-  const restoreSession = async (sessionName) => {
+  const restoreSession = async (session) => {
+    // session may be a string (name) or an object {name, timestamp, tabs}
+    const sessionName = typeof session === 'string' ? session : (session.name || session.sessionName || String(session));
     try {
       await sendMessage({
         type: MESSAGE_TYPES.SESSION_ACTION,
         action: ACTION.SESSION.RESTORE,
         payload: { sessionName }
       });
-      
+
       logger.info(formatMessage(MESSAGES.SESSION.RESTORED, { name: sessionName }));
     } catch (error) {
-      logger.error(`Error restoring session:`, { name: sessionName, error: error.message });
+      logger.error('Error restoring session:', { name: sessionName, error: error && error.message ? error.message : error });
     }
   };
 
@@ -305,18 +322,25 @@ const Popup = () => {
 
     return (
       <div id="sessionsList" className="sessions-list">
-        {sessions.map((sessionName) => (
-          <div key={sessionName} className="session-item">
-            <span className="session-name">{sessionName}</span>
-            <button
-              onClick={() => restoreSession(sessionName)}
-              className="restore-button"
-              aria-label={`Restore session: ${sessionName}`}
-            >
-              Restore
-            </button>
-          </div>
-        ))}
+        {sessions.map((sessionItem, idx) => {
+          const name = typeof sessionItem === 'string' ? sessionItem : (sessionItem.name || sessionItem.sessionName || `session-${idx}`);
+          const key = typeof sessionItem === 'object' && (sessionItem.id || sessionItem.timestamp)
+            ? `${name}-${sessionItem.id || sessionItem.timestamp}`
+            : `${name}-${idx}`;
+
+          return (
+            <div key={key} className="session-item">
+              <span className="session-name">{name}</span>
+              <button
+                onClick={() => restoreSession(sessionItem)}
+                className="restore-button"
+                aria-label={`Restore session: ${name}`}
+              >
+                Restore
+              </button>
+            </div>
+          );
+        })}
       </div>
     );
   };
