@@ -76,3 +76,7 @@ test-results/
 .tmp/
 .tmp-pw-profile*/
 pchrome-*
+
+# Don't exclude Chrome icons directory
+!browsers/chrome/icons/
+!browsers/chrome/icons/**

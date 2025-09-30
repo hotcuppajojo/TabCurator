@@ -25,7 +25,7 @@ function cleanBuild() {
 function copyNonCompiledSource() {
   console.log('Copying non-compiled source files...');
   
-  const dirsToCopy = ['utils', 'rules'];
+  const dirsToCopy = ['utils'];
 
   dirsToCopy.forEach(dir => {
     const sourcePath = path.join(PROJECT_DIR, dir);
@@ -57,6 +57,17 @@ function copyChromeFiles() {
   // Webpack already copies manifest.json, icons, and rules
   // Only copy files not handled by webpack here
   fs.copySync(path.join(PROJECT_DIR, 'popup', 'popup.css'), path.join(BUILD_DIR, 'popup', 'popup.css'));
+
+  // Copy icons directory (icons are required and validated earlier)
+  const iconsSrc = path.join(CHROME_DIR, 'icons');
+  const iconsDest = path.join(BUILD_DIR, 'icons');
+  if (fs.existsSync(iconsSrc)) {
+    fs.copySync(iconsSrc, iconsDest);
+    console.log('Icons copied to build output');
+  } else {
+    // Defensive: this should not happen due to earlier validation
+    console.warn(`Icons source not found during copy: ${iconsSrc}`);
+  }
 }
 
 // Minify assets to reduce extension size and improve load times
@@ -106,27 +117,19 @@ export async function buildChrome() {
   try {
     cleanBuild();
 
-    // Verify source files exist before building
+    // Verify source files exist before building. Icons are required for
+    // a valid Chrome extension and must be present in browsers/chrome/icons
     const requiredPaths = [
       path.join(CHROME_DIR, 'manifest.json'),
       path.join(PROJECT_DIR, 'popup'),
       path.join(PROJECT_DIR, 'options'),
-      path.join(PROJECT_DIR, 'background')
-    ];
-
-    const optionalPaths = [
+      path.join(PROJECT_DIR, 'background'),
       path.join(CHROME_DIR, 'icons')
     ];
 
     for (const requiredPath of requiredPaths) {
       if (!fs.existsSync(requiredPath)) {
         throw new Error(`Required path does not exist: ${requiredPath}`);
-      }
-    }
-
-    for (const optionalPath of optionalPaths) {
-      if (!fs.existsSync(optionalPath)) {
-        console.warn(`\u26a0\ufe0f Optional path not found: ${optionalPath}`);
       }
     }
 

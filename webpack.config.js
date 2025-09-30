@@ -72,7 +72,7 @@ export default (env) => {
       new CopyWebpackPlugin({
         patterns: [
           { from: `browsers/${target}/manifest.json`, to: 'manifest.json' },
-          { from: `browsers/${target}/icons`, to: 'icons' },
+          { from: `browsers/${target}/icons`, to: 'icons', noErrorOnMissing: true },
           { 
             from: path.resolve(__dirname, 'node_modules/webextension-polyfill/dist/browser-polyfill.min.js'),
             to: 'vendor/browser-polyfill.js'
