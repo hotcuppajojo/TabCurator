@@ -65,17 +65,20 @@ function Options() {
   }, [connected]);
 
   const loadOptions = async () => {
+    console.log('=== LOAD OPTIONS CALLED ===');
+    logger.debug('loadOptions called');
     try {
       setErrorMsg('');
       
       // First try to get fresh settings from state manager
       if (connected && connectionId) {
+        logger.debug('Loading options - requesting current settings');
         const response = await connectionManager.sendMessage({
           type: MESSAGE_TYPES.CONFIG_UPDATE,
           action: ACTION.STATE.SYNC,
           payload: {}
         });
-        
+
         if (response && response.settings) {
           setInactiveThreshold(response.settings.inactivityThreshold || CONFIG.INACTIVITY_THRESHOLDS.DEFAULT);
           setTabLimit(response.settings.maxTabs || CONFIG.TAB_LIMITS.DEFAULT);
@@ -95,6 +98,8 @@ function Options() {
   };
 
   const handleSaveOptions = async () => {
+    console.log('=== SAVE BUTTON CLICKED ===');
+    logger.debug('handleSaveOptions called');
     try {
       // Parse and validate values
       const inactiveVal = parseInt(inactiveThreshold, 10);
@@ -108,30 +113,29 @@ function Options() {
         maxTabs: tabLimitVal 
       };
   
-      // 1. Update Redux store through stateManager
-      dispatch(stateManager.actions.settings.updateSettings(updatedSettings));
-      
-      // 2. Notify background through connectionManager
+      // Let StateManager perform validation, dispatch and storage
+      logger.debug('Saving options - delegating to StateManager', updatedSettings);
+      await stateManager.updateSettings(updatedSettings);
+
+      // Notify background through connectionManager so background can sync
       if (connected && connectionId) {
-        await connectionManager.sendMessage({
-          type: MESSAGE_TYPES.CONFIG_UPDATE,
-          payload: updatedSettings
-        });
+        try {
+          await connectionManager.sendMessage({
+            type: MESSAGE_TYPES.CONFIG_UPDATE,
+            payload: updatedSettings
+          });
+        } catch (err) {
+          // Non-fatal: log and continue — state already saved locally by StateManager
+          logger.warn('Failed to notify background of settings change', { error: err && err.message ? err.message : err });
+        }
       }
-      
-      // 3. Save to browser storage as backup
-      await browser.storage.local.set({ 
-        settings: updatedSettings
-      });
-      
-      // Record telemetry
-      recordTelemetry(TELEMETRY_EVENTS.SETTINGS_UPDATED, updatedSettings);
       
       // Show success message
       showSaveSuccess();
     } catch (error) {
-      logger.error('Error saving options', { error: error.message });
-      setErrorMsg('Error saving options');
+      // Log full error for diagnostics and show the message to the user
+      logger.error('Error saving options', { error });
+      setErrorMsg(error && error.message ? `Error saving options: ${error.message}` : 'Error saving options');
     }
   };
 
@@ -192,8 +196,8 @@ function Options() {
       
       showSaveSuccess();
     } catch (error) {
-      logger.error('Error saving rules', { error: error.message });
-      setErrorMsg('Error saving rules');
+      logger.error('Error saving rules', { error });
+      setErrorMsg(error && error.message ? `Error saving rules: ${error.message}` : 'Error saving rules');
     }
   };
 

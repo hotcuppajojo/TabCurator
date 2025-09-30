@@ -35,6 +35,7 @@ import {
   TabLimitExceededError,
   VALIDATION_SCHEMAS,
   TAG_VALIDATION,
+  VALIDATION_ERRORS,
   coreSelectors,
   selectors,
   validateArgs, 

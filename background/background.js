@@ -154,7 +154,10 @@ const background = {
     const connectListener = (port) => {
       // ConnectionManager handles all port connections
       logger.debug('Port connection received:', port.name);
-      // Port handling is managed by ConnectionManager's connect method
+      // Delegate to ConnectionManager's _handleConnect method
+      if (connectionManager && typeof connectionManager._handleConnect === 'function') {
+        connectionManager._handleConnect(port);
+      }
     };
     
     // Extension lifecycle events

@@ -465,11 +465,21 @@ class StateManager {
       logger.warn('Failed to initialize bookmark folder:', error);
     }
     
-    // Optionally establish a persistent connection to background
-    try {
-      this.port = connectToBackground();
-    } catch (error) {
-      logger.warn('Failed to connect to background:', error);
+    // Only establish connection to background when NOT running in service worker context
+    const isServiceWorker = typeof importScripts === 'function' || 
+                           (typeof self !== 'undefined' && self.constructor.name === 'ServiceWorkerGlobalScope') ||
+                           (typeof globalThis !== 'undefined' && globalThis.chrome && !globalThis.window);
+    
+    if (!isServiceWorker) {
+      // Optionally establish a persistent connection to background from popup/options
+      try {
+        this.port = connectToBackground();
+        logger.debug('Connected to background script');
+      } catch (error) {
+        logger.warn('Failed to connect to background:', error);
+      }
+    } else {
+      logger.debug('Skipping background connection - already in service worker context');
     }
     
     // Listen for messages from background
@@ -550,8 +560,18 @@ class StateManager {
     try {
       switch (message.type) {
         case MESSAGE_TYPES.STATE_SYNC:
-          logger.info('Synchronizing state with service worker');
-          // ensure await so rejections are caught here (and tests that mock reject will be handled)
+          logger.info('State sync requested');
+          // Skip sync when in service worker to prevent loops
+          const isServiceWorker = typeof importScripts === 'function' || 
+                                 (typeof self !== 'undefined' && self.constructor.name === 'ServiceWorkerGlobalScope') ||
+                                 (typeof globalThis !== 'undefined' && globalThis.chrome && !globalThis.window);
+          
+          if (isServiceWorker) {
+            logger.debug('Skipping sync - already in service worker context');
+            return { success: true, skipped: true };
+          }
+          
+          // For non-service worker contexts (popup, options), perform sync
           return await this.syncWithServiceWorker();
 
         case MESSAGE_TYPES.STATE_UPDATE:
@@ -734,6 +754,56 @@ class StateManager {
     return { error: 'Tag actions not implemented' };
   }
 
+  // Settings management
+  async updateSettings(settingsPayload) {
+    try {
+      if (!settingsPayload || typeof settingsPayload !== 'object') {
+        throw new Error('Invalid settings payload');
+      }
+
+      // Validate settings values
+      if (settingsPayload.maxTabs !== undefined) {
+        const maxTabs = parseInt(settingsPayload.maxTabs, 10);
+        if (isNaN(maxTabs) || maxTabs < CONFIG.TAB_LIMITS.MIN || maxTabs > CONFIG.TAB_LIMITS.MAX) {
+          throw new Error(`maxTabs must be between ${CONFIG.TAB_LIMITS.MIN} and ${CONFIG.TAB_LIMITS.MAX}`);
+        }
+        settingsPayload.maxTabs = maxTabs;
+      }
+
+      if (settingsPayload.inactivityThreshold !== undefined) {
+        const threshold = parseInt(settingsPayload.inactivityThreshold, 10);
+        if (isNaN(threshold) || threshold < 0) {
+          throw new Error('inactivityThreshold must be a positive number');
+        }
+        settingsPayload.inactivityThreshold = threshold;
+      }
+
+      // Dispatch the update to Redux store
+      this.store.dispatch(actions.settings.updateSettings(settingsPayload));
+      
+      // Save to browser storage as backup
+      try {
+        const currentSettings = selectors.selectSettings(this.getState());
+        await browser.storage.local.set({ settings: currentSettings });
+        logger.info('Settings saved to storage', currentSettings);
+      } catch (storageError) {
+        logger.warn('Failed to save settings to storage:', storageError.message);
+        // Don't fail the entire operation if storage fails
+      }
+
+      recordTelemetry(TELEMETRY_EVENTS.SETTINGS_UPDATED, settingsPayload);
+      return { success: true, settings: settingsPayload };
+    } catch (error) {
+      logger.error('Error updating settings:', {
+        error: error.message,
+        payload: settingsPayload,
+        category: LOG_CATEGORIES.STATE,
+        severity: ERROR_CATEGORIES.SEVERITY.MEDIUM
+      });
+      throw error;
+    }
+  }
+
   // State sync
   async syncWithServiceWorker() {
     recordTelemetry(TELEMETRY_EVENTS.PERFORMANCE, { operation: 'STATE_SYNC' });
@@ -751,13 +821,13 @@ class StateManager {
 
     const state = this.getState();
 
-    // Prefer global.validateFullState when available (tests set this), otherwise attempt schema validate if present
+    // Prefer globalThis.validateFullState when available (tests set this), otherwise attempt schema validate if present
     try {
-      if (typeof global.validateFullState === 'function') {
-        const ok = global.validateFullState(state);
+      if (typeof globalThis !== 'undefined' && typeof globalThis.validateFullState === 'function') {
+        const ok = globalThis.validateFullState(state);
         if (!ok) {
-          const errMsg = (global.ajv && typeof global.ajv.errorsText === 'function')
-            ? global.ajv.errorsText(global.validateFullState.errors)
+          const errMsg = (globalThis.ajv && typeof globalThis.ajv.errorsText === 'function')
+            ? globalThis.ajv.errorsText(globalThis.validateFullState.errors)
             : 'Full-state validation failed';
           throw new Error(errMsg);
         }
@@ -769,10 +839,19 @@ class StateManager {
       // don't throw — allow sync attempt to continue to send a best-effort state
     }
 
-    try {
-      await sendMessageToBackground(MESSAGE_TYPES.STATE_SYNC, { state });
-    } catch (error) {
-      logger.warn('Failed to send state sync message:', error);
+    // Skip messaging when running in the service worker context to prevent self-messaging loops
+    const isServiceWorker = typeof importScripts === 'function' || 
+                           (typeof self !== 'undefined' && self.constructor.name === 'ServiceWorkerGlobalScope') ||
+                           (typeof globalThis !== 'undefined' && globalThis.chrome && !globalThis.window);
+    
+    if (!isServiceWorker) {
+      try {
+        await sendMessageToBackground(MESSAGE_TYPES.STATE_SYNC, { state });
+      } catch (error) {
+        logger.warn('Failed to send state sync message:', error);
+      }
+    } else {
+      logger.debug('Skipping state sync message - running in service worker context');
     }
 
     return { success: true };
@@ -792,11 +871,11 @@ class StateManager {
       }
 
       // If test harness provides validateFullState, use it to determine success/failure
-      if (typeof global.validateFullState === 'function') {
-        const valid = global.validateFullState(payload);
+      if (typeof globalThis !== 'undefined' && typeof globalThis.validateFullState === 'function') {
+        const valid = globalThis.validateFullState(payload);
         if (!valid) {
-          const msg = (global.ajv && typeof global.ajv.errorsText === 'function')
-            ? global.ajv.errorsText(global.validateFullState.errors)
+          const msg = (globalThis.ajv && typeof globalThis.ajv.errorsText === 'function')
+            ? globalThis.ajv.errorsText(globalThis.validateFullState.errors)
             : 'Full state validation failed';
           throw new Error(msg);
         }

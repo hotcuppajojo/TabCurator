@@ -190,6 +190,16 @@ class ConnectionManager {
   _setupMessageHandlers() {
     return {
       [MESSAGE_TYPES.STATE_SYNC]: async () => {
+        // Skip sync when in service worker to prevent loops
+        const isServiceWorker = typeof importScripts === 'function' || 
+                               (typeof self !== 'undefined' && self.constructor.name === 'ServiceWorkerGlobalScope') ||
+                               (typeof globalThis !== 'undefined' && globalThis.chrome && !globalThis.window);
+        
+        if (isServiceWorker) {
+          logger.debug('Skipping StateManager sync - already in service worker context');
+          return { success: true, skipped: true };
+        }
+        
         // Delegate to StateManager for state synchronization
         await this.stateManager.syncWithServiceWorker();
         return { success: true };
@@ -222,10 +232,27 @@ class ConnectionManager {
         return { sessions: allSessions };
       },
 
-      [MESSAGE_TYPES.CONFIG_UPDATE]: async () => {
-        // Use selectors from StateManager to retrieve settings
-        const settings = selectors.selectSettings(this.stateManager.getState());
-        return { settings };
+      [MESSAGE_TYPES.CONFIG_UPDATE]: async (message) => {
+        logger.debug('CONFIG_UPDATE received', { message, hasPayload: !!message.payload, payloadType: typeof message.payload });
+        
+        // If payload provided and not empty, update settings; otherwise return current settings
+        if (message.payload && typeof message.payload === 'object' && Object.keys(message.payload).length > 0) {
+          // Delegate config update to StateManager
+          try {
+            logger.debug('Updating settings with payload', message.payload);
+            await this.stateManager.updateSettings(message.payload);
+            logger.info('Settings updated successfully', message.payload);
+            return { success: true, settings: message.payload };
+          } catch (error) {
+            logger.error('Failed to update settings', { error: error.message, payload: message.payload });
+            return { success: false, error: error.message };
+          }
+        } else {
+          // No payload or empty payload - just return current settings
+          logger.debug('Returning current settings (no valid payload provided)');
+          const settings = selectors.selectSettings(this.stateManager.getState());
+          return { settings };
+        }
       },
 
       [MESSAGE_TYPES.BOOKMARK_ACTION]: async (message) => {
@@ -244,19 +271,30 @@ class ConnectionManager {
    * @returns {boolean} - True to keep the message channel open
    */
   _handleRuntimeMessage(message, sender, sendResponse) {
-    const handleAsync = async () => {
+    // Handle async processing with proper error boundaries
+    (async () => {
       try {
         const start = performance.now();
         const response = await this.handleMessage(message, sender);
         recordPerformance('handleRuntimeMessage', performance.now() - start);
-        sendResponse(response);
+        
+        // Ensure sendResponse is still valid before calling
+        if (sendResponse) {
+          sendResponse(response);
+        }
       } catch (error) {
         logger.error('Error handling message:', error);
-        sendResponse({ error: error.message || 'Unknown error' });
+        
+        // Ensure sendResponse is still valid before calling
+        if (sendResponse) {
+          sendResponse({ error: error.message || 'Unknown error' });
+        }
       }
-    };
+    })().catch(error => {
+      // Final error boundary - log but don't throw to prevent unhandled promise rejection
+      logger.error('Unhandled error in message processing:', error);
+    });
 
-    handleAsync();
     return true; // Keep message channel open for async response
   }
 
@@ -272,11 +310,20 @@ class ConnectionManager {
     logger.info('New connection', { connectionId: connId, name: port.name });
     
     port.onMessage.addListener((message) => {
+      logger.debug('Port message received', { message, connectionId: connId });
       this.handleMessage(message, { port }).then(response => {
         try {
+          logger.debug('Sending port response', { response, connectionId: connId });
           port.postMessage(response);
         } catch (error) {
-          logger.error('Error sending response:', error);
+          logger.error('Error sending response:', { error: error.message, connectionId: connId });
+        }
+      }).catch(error => {
+        logger.error('Error handling port message:', { error: error.message, connectionId: connId });
+        try {
+          port.postMessage({ error: error.message });
+        } catch (responseError) {
+          logger.error('Failed to send error response:', { error: responseError.message, connectionId: connId });
         }
       });
     });
@@ -402,7 +449,7 @@ class ConnectionManager {
   }
 
   /**
-   * Sends a message via runtime messaging
+   * Sends a message via runtime messaging or port connection
    * @param {Object} message - Message to send
    * @returns {Promise<Object>} - Response from receiver
    */
@@ -417,9 +464,42 @@ class ConnectionManager {
         VALIDATION_SCHEMAS.message.validateSync(message);
       }
       
-      // Directly route message to appropriate StateManager handlers
-      // This enforces the unidirectional flow: ConnectionManager → StateManager
-      const response = await this._routeMessage(message);
+      // Determine context: if we're in the background script or if this
+      // ConnectionManager has been initialized with a StateManager (tests and
+      // the background process), route internally. Otherwise, attempt a port
+      // based send from UI pages and fall back to runtime.sendMessage if it fails.
+      const isServiceWorker = typeof importScripts === 'function' || 
+                             (typeof self !== 'undefined' && self.constructor.name === 'ServiceWorkerGlobalScope') ||
+                             (typeof globalThis !== 'undefined' && globalThis.chrome && !globalThis.window);
+
+      let response;
+
+      // If we're running inside a service worker context, or the ConnectionManager
+      // has already been initialized with a StateManager (which implies background
+      // semantics in tests or the real background), route the message directly so
+      // handlers are invoked synchronously. This avoids waiting on port responses
+      // when running unit tests or when the call originates inside the background.
+      if (isServiceWorker || (this.stateManager && this.initialized)) {
+        // We're in the background script (or test background) - route internally
+        response = await this._routeMessage(message);
+      } else {
+        // We're in options/popup - send via port to background
+        try {
+          response = await this._sendViaPort(message);
+        } catch (portError) {
+          // Port-based messaging may fail under Manifest V3 service worker lifecycle.
+          // Fall back to runtime.sendMessage which is handled by the background's
+          // onMessage listener. Log full error for diagnostics and attempt fallback.
+          logger.warn('Port-based send failed, attempting runtime.sendMessage fallback', { error: portError && portError.message ? portError.message : portError });
+          try {
+            response = await browser.runtime.sendMessage(message);
+          } catch (runtimeErr) {
+            logger.error('runtime.sendMessage fallback failed', { error: runtimeErr && runtimeErr.message ? runtimeErr.message : runtimeErr });
+            // Re-throw the original port error to preserve context if runtime also fails
+            throw portError;
+          }
+        }
+      }
       
       // Record performance
       if (isTelemetryEnabled()) {
@@ -446,6 +526,135 @@ class ConnectionManager {
       }
       
       throw err;
+    }
+  }
+
+  /**
+   * Sends a message via port connection (for options/popup to background communication)
+   * @private
+   * @param {Object} message - Message to send
+   * @returns {Promise<Object>} - Response from background
+   */
+  async _sendViaPort(message) {
+    // Implement retry/backoff for transient port errors (Manifest V3 lifecycle can
+    // cause short-lived ports). We attempt up to configured max attempts and
+    // use configured delays and jitter. If all attempts fail, the caller will
+    // receive the last error and `sendMessage` will perform the runtime.sendMessage
+    // fallback.
+    const maxAttempts = (this.retries && this.retries.maxAttempts) || 3;
+    const delays = (this.retries && this.retries.delays) || [1000, 2000, 4000];
+    const jitterRange = (this.retries && this.retries.jitter) || 0.2;
+    const messageTimeout = (this.timeouts && this.timeouts.message) || 5000;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // Try to find an active port or establish a new one
+      let activePort = null;
+      for (const [connId, connection] of this.connections.entries()) {
+        if (connection.port && !connection.port.disconnected) {
+          activePort = connection.port;
+          break;
+        }
+      }
+
+      if (!activePort) {
+        try {
+          const port = browser.runtime.connect({ name: this.connectionName });
+          activePort = port;
+          const connectionId = `conn-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+          this.connections.set(connectionId, { port, connectionId });
+        } catch (connError) {
+          // If we can't connect at all, consider retrying
+          if (attempt >= maxAttempts - 1) {
+            throw new Error(`Failed to establish port connection: ${connError && connError.message ? connError.message : connError}`);
+          }
+          // wait with jitter then retry
+          const baseDelay = delays[Math.min(attempt, delays.length - 1)];
+          const jitter = 1 - jitterRange + (Math.random() * jitterRange * 2);
+          const waitMs = Math.max(0, Math.floor(baseDelay * jitter));
+          logger.warn(`_sendViaPort: connect failed, retrying in ${waitMs}ms`, { attempt: attempt + 1, error: connError && connError.message ? connError.message : connError });
+          await new Promise(res => setTimeout(res, waitMs));
+          continue;
+        }
+      }
+
+      // Build a promise that resolves when we receive a response via the port
+      try {
+        const response = await (async () => {
+          return await new Promise((resolve, reject) => {
+            let settled = false;
+
+            const cleanup = () => {
+              try { activePort.onMessage.removeListener(onMessage); } catch (e) {}
+              try { activePort.onDisconnect.removeListener(onDisconnect); } catch (e) {}
+            };
+
+            const onMessage = (resp) => {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              resolve(resp);
+            };
+
+            const onDisconnect = () => {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              reject(new Error('Port disconnected before response received'));
+            };
+
+            // Attach listeners
+            try {
+              activePort.onMessage.addListener(onMessage);
+              activePort.onDisconnect.addListener(onDisconnect);
+            } catch (e) {
+              settled = true;
+              cleanup();
+              reject(new Error(`Failed to attach port listeners: ${e && e.message ? e.message : e}`));
+              return;
+            }
+
+            // Attempt to send the message
+            try {
+              activePort.postMessage(message);
+            } catch (postErr) {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              reject(new Error(`Failed to send message via port: ${postErr && postErr.message ? postErr.message : postErr}`));
+              return;
+            }
+
+            // Add timeout for response
+            const timer = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              reject(new Error('Port response timed out'));
+            }, messageTimeout);
+
+            // Ensure timer cleared when promise settles
+            const originalResolve = resolve;
+            const originalReject = reject;
+            // Not strictly necessary here since cleanup removes listeners; timer will be cleaned in rejection/resolve paths.
+          });
+        })();
+
+        // If we got a response, return it
+        return response;
+      } catch (err) {
+        // If this was the last attempt, surface the error to caller
+        if (attempt >= maxAttempts - 1) {
+          throw err;
+        }
+
+        // Otherwise, compute backoff with jitter and retry
+        const baseDelay = delays[Math.min(attempt, delays.length - 1)];
+        const jitter = 1 - jitterRange + (Math.random() * jitterRange * 2);
+        const waitMs = Math.max(0, Math.floor(baseDelay * jitter));
+        logger.warn(`_sendViaPort attempt ${attempt + 1} failed, retrying in ${waitMs}ms`, { error: err && err.message ? err.message : err });
+        await new Promise(res => setTimeout(res, waitMs));
+        continue;
+      }
     }
   }
 
@@ -506,15 +715,12 @@ class ConnectionManager {
       
       this.connections.set(connectionId, connection);
       
-      // Setup listeners
-      port.onMessage.addListener((message) => {
-        connection.lastActive = Date.now();
-        this.handleMessage(message, { connectionId })
-          .catch(error => logger.error('Error handling port message', { error: error.message }));
-      });
-      
+      // Setup listeners (client-side doesn't handle messages, only sends and receives responses)
       port.onDisconnect.addListener(() => {
-        this.disconnect(connectionId);
+        logger.info('Port disconnected', { connectionId });
+        this.connections.delete(connectionId);
+        this.connectionState.state = CONNECTION_STATES.DISCONNECTED;
+        this.connectionState.isReady = false;
       });
       
       // Update connection state
@@ -667,6 +873,16 @@ class ConnectionManager {
    */
   async syncState() {
     if (!this.stateManager || !this.initialized) return;
+
+    // Skip sync when in service worker to prevent loops
+    const isServiceWorker = typeof importScripts === 'function' || 
+                           (typeof self !== 'undefined' && self.constructor.name === 'ServiceWorkerGlobalScope') ||
+                           (typeof globalThis !== 'undefined' && globalThis.chrome && !globalThis.window);
+    
+    if (isServiceWorker) {
+      logger.debug('Skipping ConnectionManager syncState - already in service worker context');
+      return;
+    }
 
     try {
       await this.stateManager.syncWithServiceWorker();

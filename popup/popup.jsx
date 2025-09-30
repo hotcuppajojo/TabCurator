@@ -139,15 +139,40 @@ const Popup = () => {
 
   // Updated sendMessage function
   const sendMessage = async (message) => {
-    if (!connected) {
-      throw new Error('Not connected to background service');
-    }
-    
     try {
-      // Use connectionManager.sendMessage directly
+      // If the local connected state hasn't updated yet (React state is async),
+      // prefer an existing connection from the ConnectionManager instance. This
+      // is faster and avoids creating duplicate ports. If none exists, attempt
+      // a connect() as a fallback; if that also fails, ConnectionManager's
+      // sendMessage will still try runtime.sendMessage fallback.
+      if (!connected) {
+        try {
+          if (connectionManager && connectionManager.connections && connectionManager.connections.size > 0) {
+            // Use the first available connection
+            const firstConn = connectionManager.connections.values().next().value;
+            if (firstConn) {
+              setConnected(true);
+              setConnectionId(firstConn.connectionId);
+            }
+          } else if (connectionManager && connectionManager.connect) {
+            // Attempt to create a connection (connect may be synchronous)
+            const conn = connectionManager.connect();
+            if (conn) {
+              setConnected(true);
+              setConnectionId(conn.connectionId);
+            }
+          }
+        } catch (connErr) {
+          logger.debug('Deferred connect attempt failed in sendMessage', { error: connErr && connErr.message ? connErr.message : connErr });
+        }
+      }
+
+      // Use connectionManager.sendMessage directly. ConnectionManager now
+      // contains a runtime.sendMessage fallback for port failures.
       return await connectionManager.sendMessage(message);
     } catch (error) {
-      logger.error('Send Message Error:', { error: error.message });
+      // Log the full error for diagnostics and rethrow
+      logger.error('Send Message Error:', error);
       throw error;
     }
   };
@@ -221,8 +246,10 @@ const Popup = () => {
       
       setSessions(response.sessions || []);
     } catch (error) {
-      logger.error('Failed to load sessions:', { error: error.message });
-      setErrorMsg('Failed to load sessions');
+      // Log full error so we can see returned objects (some handlers return {error:...})
+      logger.error('Failed to load sessions:', error);
+      const msg = error?.message || (typeof error === 'object' ? JSON.stringify(error) : String(error));
+      setErrorMsg(`Failed to load sessions: ${msg}`);
       setSessions([]);
     }
   };

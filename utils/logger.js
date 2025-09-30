@@ -6,9 +6,9 @@
 import { 
   LOG_LEVELS, 
   LOG_CATEGORIES, 
-  ERROR_CATEGORIES 
-} from './core/error.js';
-import { CONFIG } from './core/config.js';
+  ERROR_CATEGORIES,
+  CONFIG
+} from './core/index.js';
 import { 
   recordTelemetry, 
   isTelemetryEnabled, 
@@ -63,10 +63,8 @@ class Logger {
       maxRetries: 3,
       baseDelay: 1000,
       maxDelay: 10000,
-      pendingRetries: new Map()
     };
 
-    this._lastMetricsCleanup = Date.now();
     this.initialize();
   }
 
@@ -202,15 +200,15 @@ class Logger {
     }
   }
 
-  _notifyTelemetry(data) {
-    if (!isTelemetryEnabled()) return;
+  async _notifyTelemetry(data) {
+    if (!window.telemetry) return;
 
     const retryId = crypto.randomUUID();
     let attempt = 0;
 
     const attemptSubmission = async () => {
       try {
-        await recordTelemetry(TELEMETRY_EVENTS.LOGGING_METRICS, {
+        await window.telemetry.send({
           ...data,
           timestamp: Date.now(),
           retryId
@@ -242,7 +240,7 @@ class Logger {
       }
     };
 
-    attemptSubmission();
+    await attemptSubmission();
   }
 
   log(level, message, context = {}) {
@@ -340,7 +338,7 @@ class Logger {
     const key = `${entry.level}_${entry.context.type || 'general'}`;
     const entries = this.logs.get(key) || [];
     entries.unshift(entry);
-    entries.splice(TELEMETRY_CONFIG.MAX_ENTRIES); // Keep limited history
+    entries.splice(CONFIG.TELEMETRY.MAX_ENTRIES); // Keep limited history
     this.logs.set(key, entries);
   }
 
@@ -399,7 +397,7 @@ class Logger {
     });
 
     // Keep limited samples with preference for recent and outliers
-    if (metrics.samples.length > TELEMETRY_CONFIG.SAMPLE_SIZE) {
+    if (metrics.samples.length > CONFIG.TELEMETRY.SAMPLE_SIZE) {
       // Keep first/last samples and outliers
       const sorted = metrics.samples
         .slice(1, -1)
@@ -407,7 +405,7 @@ class Logger {
       
       metrics.samples = [
         metrics.samples[0],
-        ...sorted.slice(0, TELEMETRY_CONFIG.SAMPLE_SIZE - 2),
+        ...sorted.slice(0, CONFIG.TELEMETRY.SAMPLE_SIZE - 2),
         metrics.samples[metrics.samples.length - 1]
       ];
     }
@@ -585,7 +583,6 @@ class Logger {
     };
   }
 
-  // Public methods for logging
   info(message, meta) {
     console.info(`[INFO] ${message}`, meta);
   }
